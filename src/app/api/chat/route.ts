@@ -1,4 +1,4 @@
-import { streamText, tool, convertToModelMessages } from 'ai';
+import { streamText, tool, convertToModelMessages, stepCountIs } from 'ai';
 import { getModel } from '../../../lib/ai';
 import { auth0 } from '../../../lib/auth0';
 import { saveMessages } from '../../../lib/db/projects';
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
-    maxSteps: 10,
+    stopWhen: stepCountIs(10),
     system: `You are an elite, autonomous AI App Builder (similar to Lovable or v0).
 You are tasked with generating stunning, fully-functional, production-ready Next.js web applications directly from user prompts.
 You have access to a secure, remote Daytona Node.js sandbox.
