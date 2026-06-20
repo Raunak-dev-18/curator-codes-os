@@ -6,6 +6,10 @@ import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import Editor from '@monaco-editor/react';
+import { FileExplorer } from './FileExplorer';
+import { ContextMenu } from './ContextMenu';
+import { Search, X, Settings } from 'lucide-react';
 
 interface Project {
   id: string;
@@ -30,6 +34,58 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Code Mode States
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [openedFiles, setOpenedFiles] = useState<string[]>([]);
+  const [fileContent, setFileContent] = useState<string>('');
+  const [isFileLoading, setIsFileLoading] = useState(false);
+  const [showMinimap, setShowMinimap] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editorContextMenu, setEditorContextMenu] = useState<{ x: number, y: number } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleFileSelect = (path: string) => {
+    if (!openedFiles.includes(path)) {
+      setOpenedFiles(prev => [...prev, path]);
+    }
+    setActiveFile(path);
+  };
+
+  const handleCloseFile = (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    const newFiles = openedFiles.filter(f => f !== path);
+    setOpenedFiles(newFiles);
+    if (activeFile === path) {
+      setActiveFile(newFiles.length > 0 ? newFiles[newFiles.length - 1] : null);
+    }
+  };
+
+  const handleEditorChange = (value: string | undefined) => {
+    if (value === undefined) return;
+    setFileContent(value);
+    
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    
+    if (activeFile) {
+      setIsSaving(true);
+      saveTimeoutRef.current = setTimeout(async () => {
+        try {
+          await fetch('/api/sandbox/file/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: project.id, path: activeFile, content: value })
+          });
+        } catch (err) {
+          console.error("Auto-save failed", err);
+        } finally {
+          setIsSaving(false);
+        }
+      }, 1000); // 1s debounce
+    }
+  };
   
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
@@ -165,6 +221,28 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
     if (iframe) iframe.style.pointerEvents = 'none';
   };
 
+  // Fetch file content when activeFile changes
+  useEffect(() => {
+    if (!activeFile) return;
+    
+    const fetchFileContent = async () => {
+      setIsFileLoading(true);
+      try {
+        const res = await fetch(`/api/sandbox/file?projectId=${project.id}&path=${encodeURIComponent(activeFile)}`);
+        if (!res.ok) throw new Error('Failed to fetch file');
+        const text = await res.text();
+        setFileContent(text);
+      } catch (err) {
+        console.error(err);
+        setFileContent('Error loading file content.');
+      } finally {
+        setIsFileLoading(false);
+      }
+    };
+    
+    fetchFileContent();
+  }, [activeFile, project.id]);
+
   // Trigger initial prompt
   useEffect(() => {
     if ((initialPrompt || typeof window !== 'undefined' && sessionStorage.getItem(`initial_files_${project.id}`)) && project.messages.length === 0 && !initialTriggered.current) {
@@ -235,11 +313,17 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
         <div className="header-center">
           <div className="view-toggles">
-            <button className="view-btn active">
+            <button 
+              className={`view-btn ${viewMode === 'preview' ? 'active' : ''}`}
+              onClick={() => setViewMode('preview')}
+            >
               <span>Preview</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
             </button>
-            <button className="view-btn">
+            <button 
+              className={`view-btn ${viewMode === 'code' ? 'active' : ''}`}
+              onClick={() => setViewMode('code')}
+            >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
             </button>
             <button className="view-btn">
@@ -312,12 +396,50 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {textContent}
                         </ReactMarkdown>
-                        {m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool').map((tool, idx) => (
-                          <div key={idx} className="tool-call-badge">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
-                            <span>Updating Canvas...</span>
-                          </div>
-                        ))}
+                        {m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool').map((tool: any, idx: number) => {
+                          const toolName = tool.toolName || (tool.type.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
+                          
+                          let label = 'Working...';
+                          let icon = (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+                            </svg>
+                          );
+
+                          // Parse args to show specific info
+                          let args = {} as any;
+                          try {
+                            if (tool.args) args = tool.args;
+                            else if (typeof tool.argsText === 'string') args = JSON.parse(tool.argsText);
+                          } catch (e) {}
+
+                          if (toolName === 'updateCanvas') {
+                            label = 'Updating Preview Canvas...';
+                          } else if (toolName === 'execute_command') {
+                            label = `Running: ${args.command || 'command'}...`;
+                          } else if (toolName === 'write_file') {
+                            label = `Writing file: ${args.path || 'file'}...`;
+                            icon = (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-pulse">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                              </svg>
+                            );
+                          } else if (toolName === 'read_file') {
+                            label = `Reading: ${args.path || 'file'}...`;
+                          } else if (toolName === 'get_preview_url') {
+                            label = 'Fetching Preview URL...';
+                          } else if (toolName === 'create_sandbox') {
+                            label = 'Initializing Sandbox...';
+                          }
+
+                          return (
+                            <div key={idx} className="tool-call-badge flex items-center gap-2 px-3 py-2 bg-[#1e1e1e] rounded-md border border-[#333] text-xs text-neutral-300 w-fit mt-2 shadow-sm" title={toolName}>
+                              {icon}
+                              <span className="font-mono">{label}</span>
+                            </div>
+                          );
+                        })}
                         <div className="message-actions">
                           <button 
                             className="copy-btn" 
@@ -421,16 +543,131 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
           title="Drag to resize"
         />
 
-        {/* Right Canvas Area */}
-        <div className="workspace-canvas">
-          <div className="canvas-wrapper">
-            <iframe 
-              srcDoc={canvasCode || defaultCanvas}
-              sandbox="allow-scripts allow-same-origin allow-forms"
-              className="canvas-frame"
-              title="Preview Canvas"
-            />
-          </div>
+        {/* Right Canvas / Code Area */}
+        <div className="workspace-canvas" style={{ alignItems: 'stretch' }}>
+          {viewMode === 'preview' ? (
+            <div className="canvas-wrapper" style={{ flex: 1, width: '100%', height: '100%' }}>
+              <iframe 
+                srcDoc={canvasCode || defaultCanvas}
+                sandbox="allow-scripts allow-same-origin allow-forms"
+                className="canvas-frame"
+                title="Preview Canvas"
+                style={{ width: '100%', height: '100%', border: 'none' }}
+              />
+            </div>
+          ) : (
+            <div className="code-mode-container">
+              <div className="file-explorer-panel">
+                <div className="explorer-title flex items-center justify-between" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>Explorer</span>
+                </div>
+                <div style={{ padding: '0 1rem 0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', background: '#000', borderRadius: '4px', border: '1px solid #333', padding: '2px 6px' }}>
+                    <Search width="12" height="12" color="#737373" />
+                    <input 
+                      placeholder="Search files..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      style={{ background: 'transparent', border: 'none', color: '#ccc', fontSize: '11px', width: '100%', outline: 'none', padding: '4px' }}
+                    />
+                  </div>
+                </div>
+                <FileExplorer 
+                  projectId={project.id} 
+                  onFileSelect={handleFileSelect} 
+                  searchQuery={searchQuery}
+                />
+              </div>
+              <div className="editor-panel">
+                {openedFiles.length > 0 ? (
+                  <>
+                    <div 
+                      className="editor-tabs-container" 
+                      style={{ display: 'flex', overflowX: 'auto', background: '#181818', borderBottom: '1px solid #333' }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setEditorContextMenu({ x: e.clientX, y: e.clientY });
+                      }}
+                    >
+                      {openedFiles.map(file => (
+                        <div 
+                          key={file}
+                          className={`editor-tab ${activeFile === file ? 'active' : ''}`}
+                          onClick={() => setActiveFile(file)}
+                          style={{ 
+                            display: 'flex', alignItems: 'center', gap: '8px', padding: '0.5rem 1rem', fontSize: '13px', 
+                            cursor: 'pointer', borderRight: '1px solid #333',
+                            background: activeFile === file ? '#1e1e1e' : '#181818',
+                            color: activeFile === file ? '#ffffff' : '#8a8a8a',
+                            borderTop: activeFile === file ? '1px solid #007acc' : '1px solid transparent'
+                          }}
+                        >
+                          {file.split('/').pop()}
+                          <div 
+                            className="tab-close" 
+                            onClick={(e) => handleCloseFile(e, file)}
+                            style={{ opacity: activeFile === file ? 1 : 0.5, cursor: 'pointer', padding: '2px', borderRadius: '4px' }}
+                          >
+                            <X width="14" height="14" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {isFileLoading && (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#1e1e1e]/80">
+                        <div className="text-neutral-400 animate-pulse">Loading...</div>
+                      </div>
+                    )}
+                    <Editor
+                      height="100%"
+                      defaultLanguage="typescript"
+                      language={activeFile?.endsWith('.ts') || activeFile?.endsWith('.tsx') ? 'typescript' : 
+                               activeFile?.endsWith('.js') || activeFile?.endsWith('.jsx') ? 'javascript' :
+                               activeFile?.endsWith('.css') ? 'css' :
+                               activeFile?.endsWith('.json') ? 'json' :
+                               activeFile?.endsWith('.html') ? 'html' : 'plaintext'}
+                      theme="vs-dark"
+                      value={fileContent}
+                      onChange={handleEditorChange}
+                      options={{
+                        readOnly: false,
+                        minimap: { enabled: showMinimap },
+                        fontSize: 14,
+                        wordWrap: 'on',
+                        padding: { top: 16 }
+                      }}
+                    />
+                    {isSaving && (
+                      <div style={{ position: 'absolute', bottom: '8px', right: '16px', fontSize: '11px', color: '#8a8a8a' }}>
+                        Saving...
+                      </div>
+                    )}
+                    {editorContextMenu && (
+                      <ContextMenu
+                        x={editorContextMenu.x}
+                        y={editorContextMenu.y}
+                        onClose={() => setEditorContextMenu(null)}
+                        items={[
+                          {
+                            label: showMinimap ? 'Hide Minimap' : 'Show Minimap',
+                            icon: <Settings width="14" height="14" />,
+                            onClick: () => setShowMinimap(!showMinimap)
+                          }
+                        ]}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#737373' }}>
+                    <div style={{ textAlign: 'center' }}>
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" style={{ margin: '0 auto 1rem', opacity: 0.5 }}><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+                      <p>Select a file to view code</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

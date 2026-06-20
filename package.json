@@ -12,6 +12,8 @@
     "@ai-sdk/openai": "^3.0.73",
     "@ai-sdk/react": "^3.0.210",
     "@auth0/nextjs-auth0": "^4.22.0",
+    "@daytona/sdk": "^0.189.0",
+    "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-dialog": "^1.1.17",
     "@radix-ui/react-tooltip": "^1.2.10",
     "ai": "^6.0.208",
