@@ -454,7 +454,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .prompt-textarea::placeholder {
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .prompt-footer {
@@ -1096,6 +1096,10 @@ h1, h2, h3, h4, h5, h6 {
   font-family: inherit;
   flex: 1;
   margin-bottom: 1rem;
+}
+
+.prompt-box-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .prompt-box-footer {

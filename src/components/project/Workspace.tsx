@@ -167,9 +167,22 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
   // Trigger initial prompt
   useEffect(() => {
-    if (initialPrompt && project.messages.length === 0 && !initialTriggered.current) {
+    if ((initialPrompt || typeof window !== 'undefined' && sessionStorage.getItem(`initial_files_${project.id}`)) && project.messages.length === 0 && !initialTriggered.current) {
       initialTriggered.current = true;
-      sendMessage({ text: initialPrompt }, { body: { projectId: project.id } });
+      
+      const payload: any = { text: initialPrompt || '' };
+      
+      try {
+        const storedFiles = sessionStorage.getItem(`initial_files_${project.id}`);
+        if (storedFiles) {
+          payload.files = JSON.parse(storedFiles);
+          sessionStorage.removeItem(`initial_files_${project.id}`);
+        }
+      } catch (e) {
+        console.error("Failed to parse initial files", e);
+      }
+      
+      sendMessage(payload, { body: { projectId: project.id } });
       window.history.replaceState({}, '', `/projects/${project.id}`);
     }
   }, [initialPrompt, project.messages.length, project.id, sendMessage]);
@@ -369,7 +382,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
               <textarea 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Message AI Builder..."
+                placeholder="Build me a blog page."
                 className="prompt-textarea"
                 rows={1}
                 onKeyDown={(e) => {

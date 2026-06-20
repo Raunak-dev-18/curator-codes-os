@@ -1,18 +1,48 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 export function PromptForm() {
   const [prompt, setPrompt] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() && selectedFiles.length === 0) return;
 
     // Generate a unique project ID
     const projectId = crypto.randomUUID();
+    
+    if (selectedFiles.length > 0) {
+      const attachments = await Promise.all(selectedFiles.map(async (file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve({
+            type: 'file',
+            url: ev.target?.result,
+            mediaType: file.type,
+            contentType: file.type,
+            name: file.name,
+            filename: file.name
+          });
+          reader.readAsDataURL(file);
+        });
+      }));
+      sessionStorage.setItem(`initial_files_${projectId}`, JSON.stringify(attachments));
+    }
     
     // Redirect to the new project workspace with the initial prompt
     router.push(`/projects/${projectId}?prompt=${encodeURIComponent(prompt)}`);
@@ -21,23 +51,51 @@ export function PromptForm() {
   return (
     <div style={{ width: '100%', maxWidth: '600px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <form className="prompt-box-aesthetic" onSubmit={handleSubmit}>
+        <input 
+          type="file" 
+          multiple 
+          ref={fileInputRef} 
+          style={{ display: 'none' }} 
+          onChange={handleFileChange}
+          accept="image/*,.pdf,.doc,.docx,.txt"
+        />
+        {selectedFiles.length > 0 && (
+          <div className="selected-files" style={{ padding: '0 1rem 1rem 1rem' }}>
+            {selectedFiles.map((f, idx) => (
+              <div key={idx} className="file-chip">
+                {f.type.startsWith('image/') && (
+                  <img 
+                    src={URL.createObjectURL(f)} 
+                    alt={f.name} 
+                    className="file-chip-thumb" 
+                  />
+                )}
+                <span className="file-name" title={f.name}>{f.name}</span>
+                <button type="button" className="remove-file-btn" onClick={() => removeFile(idx)}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea 
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Build me a blog page."
           className="prompt-box-textarea"
           rows={3}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (prompt.trim()) handleSubmit(e as any);
+              if (prompt.trim() || selectedFiles.length > 0) handleSubmit(e as any);
             }
           }}
         />
         <div className="prompt-box-footer">
-          <button type="button" className="btn-icon-plus" title="Add Tool">
+          <button type="button" className="btn-icon-plus" title="Add File" onClick={() => fileInputRef.current?.click()}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
           </button>
-          <button type="submit" className="btn-submit-aesthetic" title="Send" disabled={!prompt.trim()}>
+          <button type="submit" className="btn-submit-aesthetic" title="Send" disabled={!prompt.trim() && selectedFiles.length === 0}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           </button>
         </div>
