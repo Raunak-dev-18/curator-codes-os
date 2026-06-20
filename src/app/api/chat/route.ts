@@ -1,7 +1,7 @@
 import { streamText, tool, convertToModelMessages, stepCountIs } from 'ai';
 import { getModel } from '../../../lib/ai';
 import { auth0 } from '../../../lib/auth0';
-import { saveMessages } from '../../../lib/db/projects';
+import { saveMessages, deleteProjectFile, renameProjectFile } from '../../../lib/db/projects';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { getDaytonaClient, getProjectSandbox } from '../../../lib/daytona';
@@ -85,29 +85,34 @@ You have access to a secure, remote Daytona Node.js sandbox.
 ## 🚀 The Multi-Step Agentic Workflow
 You MUST follow this exact loop for every project:
 
-**Step 1: Scaffolding (If not already a Next.js app)**
-- Run \`execute_command\`: \`npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*"\`
-- Wait for it to finish.
-- Run \`execute_command\` to install libraries: \`npm install framer-motion lucide-react clsx tailwind-merge\`
+**Step 1: Code Acquisition & Scaffolding**
+- If working with an existing repo, use 'git_clone' to clone it.
+- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*"'
+- Wait for it to finish, then 'execute_command': 'npm install framer-motion lucide-react clsx tailwind-merge'
 
 **Step 2: Architecture & Coding (CRITICAL STEP)**
 - You must physically write the code for the user's request. 
-- Use \`write_file\` to create or overwrite \`src/app/page.tsx\`, \`src/app/globals.css\`, and any necessary UI components.
-- **IMPORTANT**: The user's IDE reads from a database. ONLY files you explicitly write using the \`write_file\` tool will show up in their File Explorer. Do not skip this step!
+- Use 'write_file' to create or overwrite 'src/app/page.tsx', 'src/app/globals.css', and any necessary UI components.
+- You can use 'delete_file' or 'move_file' to manage the file system.
+- **IMPORTANT**: The user's IDE reads from a database. ONLY files you explicitly write using the 'write_file' tool will show up in their File Explorer. Do not skip this step!
 
-**Step 3: Start Server & Get URL**
-- Use \`execute_command\` to start the Next.js dev server: \`nohup npm run dev > dev.log 2>&1 &\`
-- Use \`get_preview_url\` with port \`3000\` to fetch the live URL.
+**Step 3: Version Control (Optional)**
+- If the user asks you to save or commit work, use 'git_commit' and 'git_push'.
 
-**Step 4: Render to User**
-- Use \`updateCanvas\` passing an iframe with the preview URL: \`<iframe src="PREVIEW_URL" style="width: 100%; height: 100vh; border: none;"></iframe>\`
+**Step 4: Start Server & Get URL**
+- Use 'execute_command' to start the Next.js dev server: 'nohup npm run dev > dev.log 2>&1 &'
+- If you encounter issues, you can check 'get_entrypoint_logs' or read 'dev.log'.
+- Use 'get_preview_url' with port '3000' to fetch the live URL.
+
+**Step 5: Render to User**
+- Use 'updateCanvas' passing an iframe with the preview URL: '<iframe src="PREVIEW_URL" style="width: 100%; height: 100vh; border: none;"></iframe>'
 
 ## 🚫 Strict Rules
-1. **NO RAW CODE IN CHAT**: NEVER output raw markdown code blocks (e.g. \`\`\`tsx ... \`\`\`) in your chat messages. Only use \`write_file\`.
+1. **NO RAW CODE IN CHAT**: NEVER output raw markdown code blocks (e.g. tsx code blocks) in your chat messages. Only use 'write_file'.
 2. **CONCISE CHAT**: Say "Building your application..." and let your tool calls do the talking.
-3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text. Only use \`updateCanvas\`.
+3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text. Only use 'updateCanvas'.
 
-Remember: Scaffolding is just step 1. You haven't built the app until you've written the custom React components via \`write_file\`! Make the user say "WOW".`,
+Remember: Scaffolding is just step 1. You haven't built the app until you've written the custom React components via 'write_file'! Make the user say "WOW".`,
     messages: modelMessages,
     tools: {
       updateCanvas: tool({
@@ -177,6 +182,131 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
             return files.map(f => `${f.isDir ? '[DIR]' : '[FILE]'} ${f.name} - ${f.size} bytes`).join('\n');
           } catch (err: any) {
             return `Failed to list files: ${err.message}`;
+          }
+        }
+      }),
+      delete_file: tool({
+        description: 'Delete a file or directory in the sandbox.',
+        inputSchema: z.object({
+          path: z.string().describe('Path to the file or directory to delete.')
+        }),
+        execute: async ({ path }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            await sandbox.fs.deleteFile(path);
+            await deleteProjectFile(projectId, path);
+            return `Successfully deleted ${path}`;
+          } catch (err: any) {
+            return `Failed to delete file: ${err.message}`;
+          }
+        }
+      }),
+      move_file: tool({
+        description: 'Move or rename a file in the sandbox.',
+        inputSchema: z.object({
+          source: z.string().describe('Source path of the file.'),
+          destination: z.string().describe('Destination path for the file.')
+        }),
+        execute: async ({ source, destination }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            await sandbox.fs.moveFiles(source, destination);
+            await renameProjectFile(projectId, source, destination);
+            return `Successfully moved ${source} to ${destination}`;
+          } catch (err: any) {
+            return `Failed to move file: ${err.message}`;
+          }
+        }
+      }),
+      git_clone: tool({
+        description: 'Clone a git repository into the sandbox.',
+        inputSchema: z.object({
+          url: z.string().describe('The URL of the git repository.'),
+          path: z.string().describe('The path to clone the repository into.')
+        }),
+        execute: async ({ url, path }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            await sandbox.git.clone(url, path);
+            return `Successfully cloned ${url} into ${path}`;
+          } catch (err: any) {
+            return `Failed to clone repository: ${err.message}`;
+          }
+        }
+      }),
+      git_commit: tool({
+        description: 'Commit changes to the git repository.',
+        inputSchema: z.object({
+          path: z.string().describe('The path of the git repository.'),
+          message: z.string().describe('The commit message.'),
+          author: z.string().describe('The name of the author.'),
+          email: z.string().describe('The email of the author.')
+        }),
+        execute: async ({ path, message, author, email }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            const resp = await sandbox.git.commit(path, message, author, email);
+            return `Successfully committed changes. Hash: ${resp.hash}`;
+          } catch (err: any) {
+            return `Failed to commit changes: ${err.message}`;
+          }
+        }
+      }),
+      git_status: tool({
+        description: 'Get the status of the git repository.',
+        inputSchema: z.object({
+          path: z.string().describe('The path of the git repository.')
+        }),
+        execute: async ({ path }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            const status = await sandbox.git.status(path);
+            return JSON.stringify(status, null, 2);
+          } catch (err: any) {
+            return `Failed to get git status: ${err.message}`;
+          }
+        }
+      }),
+      git_push: tool({
+        description: 'Push changes to the remote git repository.',
+        inputSchema: z.object({
+          path: z.string().describe('The path of the git repository.')
+        }),
+        execute: async ({ path }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            await sandbox.git.push(path);
+            return `Successfully pushed changes for ${path}`;
+          } catch (err: any) {
+            return `Failed to push changes: ${err.message}`;
+          }
+        }
+      }),
+      git_pull: tool({
+        description: 'Pull changes from the remote git repository.',
+        inputSchema: z.object({
+          path: z.string().describe('The path of the git repository.')
+        }),
+        execute: async ({ path }) => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            await sandbox.git.pull(path);
+            return `Successfully pulled changes for ${path}`;
+          } catch (err: any) {
+            return `Failed to pull changes: ${err.message}`;
+          }
+        }
+      }),
+      get_entrypoint_logs: tool({
+        description: 'Get the entrypoint logs (stdout and stderr) of the sandbox container.',
+        inputSchema: z.object({}),
+        execute: async () => {
+          const sandbox = await getProjectSandbox(projectId);
+          try {
+            const logs = await sandbox.process.getEntrypointLogs();
+            return `STDOUT:\n${logs.stdout}\n\nSTDERR:\n${logs.stderr}`;
+          } catch (err: any) {
+            return `Failed to get entrypoint logs: ${err.message}`;
           }
         }
       }),
