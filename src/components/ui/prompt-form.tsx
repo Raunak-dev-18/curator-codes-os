@@ -44,8 +44,12 @@ export function PromptForm() {
       sessionStorage.setItem(`initial_files_${projectId}`, JSON.stringify(attachments));
     }
     
+    let queryStr = `prompt=${encodeURIComponent(prompt)}`;
+    if (selectedFiles.length > 0) {
+      queryStr += `&hasFiles=true`;
+    }
     // Redirect to the new project workspace with the initial prompt
-    router.push(`/projects/${projectId}?prompt=${encodeURIComponent(prompt)}`);
+    router.push(`/projects/${projectId}?${queryStr}`);
   };
 
   return (

@@ -10,7 +10,7 @@ export default async function ProjectPage({
   searchParams
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ prompt?: string }>;
+  searchParams: Promise<{ prompt?: string; hasFiles?: string }>;
 }) {
   const session = await auth0.getSession();
   if (!session?.user) {
@@ -27,8 +27,10 @@ export default async function ProjectPage({
 
   // If the project doesn't exist, create it
   if (!project) {
-    if (resolvedSearchParams.prompt) {
-      const title = resolvedSearchParams.prompt.slice(0, 30) + (resolvedSearchParams.prompt.length > 30 ? '...' : '');
+    if (resolvedSearchParams.prompt || resolvedSearchParams.hasFiles) {
+      const title = resolvedSearchParams.prompt 
+        ? resolvedSearchParams.prompt.slice(0, 30) + (resolvedSearchParams.prompt.length > 30 ? '...' : '')
+        : 'Image Upload';
       project = await createProject(userId, projectId, title);
     } else {
       redirect('/dashboard');
