@@ -396,45 +396,57 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {textContent}
                         </ReactMarkdown>
-                        {m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool').map((tool: any, idx: number) => {
-                          const toolName = tool.toolName || (tool.type.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
+                        {(m.toolInvocations || m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool'))?.map((tool: any, idx: number) => {
+                          const toolName = tool.toolName || (tool.type?.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
+                          const isResult = tool.state === 'result' || tool.result !== undefined;
                           
                           let label = 'Working...';
-                          let icon = (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+                          let icon = isResult ? (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2">
+                              <path d="M20 6L9 17l-5-5"/>
+                            </svg>
+                          ) : (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+                               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                             </svg>
                           );
 
                           // Parse args to show specific info
                           let args = {} as any;
                           try {
-                            if (tool.args) args = tool.args;
+                            if (tool.args && typeof tool.args === 'object') args = tool.args;
+                            else if (typeof tool.args === 'string') args = JSON.parse(tool.args);
                             else if (typeof tool.argsText === 'string') args = JSON.parse(tool.argsText);
                           } catch (e) {}
+
+                          const commandStr = args.command ? (args.command.length > 30 ? args.command.substring(0, 30) + '...' : args.command) : 'command';
 
                           if (toolName === 'updateCanvas') {
                             label = 'Updating Preview Canvas...';
                           } else if (toolName === 'execute_command') {
-                            label = `Running: ${args.command || 'command'}...`;
+                            label = `Running: ${commandStr}`;
                           } else if (toolName === 'write_file') {
                             label = `Writing file: ${args.path || 'file'}...`;
-                            icon = (
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-pulse">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                              </svg>
-                            );
+                            if (!isResult) {
+                              icon = (
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-pulse">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                </svg>
+                              );
+                            }
                           } else if (toolName === 'read_file') {
                             label = `Reading: ${args.path || 'file'}...`;
                           } else if (toolName === 'get_preview_url') {
                             label = 'Fetching Preview URL...';
+                          } else if (toolName === 'list_files') {
+                            label = 'Listing Sandbox Files...';
                           } else if (toolName === 'create_sandbox') {
                             label = 'Initializing Sandbox...';
                           }
 
                           return (
-                            <div key={idx} className="tool-call-badge flex items-center gap-2 px-3 py-2 bg-[#1e1e1e] rounded-md border border-[#333] text-xs text-neutral-300 w-fit mt-2 shadow-sm" title={toolName}>
+                            <div key={idx} className={`tool-call-badge flex items-center gap-2 px-3 py-2 rounded-md border text-xs w-fit mt-2 shadow-sm ${isResult ? 'bg-[#1e1e1e] border-[#333] text-neutral-400' : 'bg-[#1a2e1e] border-[#2e5e3e] text-[#4ade80]'}`} title={toolName}>
                               {icon}
                               <span className="font-mono">{label}</span>
                             </div>
