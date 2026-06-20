@@ -1,4 +1,4 @@
-import { streamText, tool } from 'ai';
+import { streamText, tool, convertToModelMessages } from 'ai';
 import { getModel } from '../../../lib/ai';
 import { auth0 } from '../../../lib/auth0';
 import { saveMessages } from '../../../lib/db/projects';
@@ -31,23 +31,20 @@ export async function POST(req: Request) {
   }
 
   const model = getModel();
+  const modelMessages = await convertToModelMessages(messages);
 
   const result = streamText({
     model,
     system: "You are an expert web developer and UI designer. You can update the user's preview canvas using the updateCanvas tool. Always use the tool to render UI when asked to build or change something. Ensure the code works and looks great.",
-    messages,
+    messages: modelMessages,
     tools: {
-      updateCanvas: tool({
+      updateCanvas: {
         description: 'Update the preview canvas with HTML/CSS/JS code to render the requested app or component.',
         parameters: z.object({
           code: z.string().describe('The complete HTML document or React code to render. You can use standard HTML/CSS or external CDNs.'),
           explanation: z.string().describe('A brief explanation of what was built or changed.')
-        }),
-        execute: async ({ code, explanation }) => {
-          // This executes on the server. We acknowledge the execution so the UI knows it finished.
-          return { success: true, message: 'Canvas successfully updated.' };
-        },
-      }),
+        })
+      },
     },
     async onFinish({ text, toolCalls, toolResults }) {
       try {
@@ -63,7 +60,7 @@ export async function POST(req: Request) {
             state: 'result',
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            args: tc.args,
+            args: tc.input,
             result: toolResults?.[index]
           }));
         }

@@ -3,6 +3,8 @@ import { redirect } from 'next/navigation';
 import { getProject, createProject } from '../../../lib/db/projects';
 import { Workspace } from '../../../components/project/Workspace';
 
+export const dynamic = 'force-dynamic';
+
 export default async function ProjectPage({
   params,
   searchParams
@@ -34,10 +36,21 @@ export default async function ProjectPage({
   }
 
   // Serialize the MongoDB document before passing to Client Component
+  const normalizedMessages = (project.messages || []).map((m: any) => {
+    const extractedText = m.content || m.text || (m.parts ? m.parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') : '');
+    return {
+      id: m.id || crypto.randomUUID(),
+      role: m.role || 'user',
+      content: extractedText,
+      parts: m.parts || [{ type: 'text', text: extractedText }],
+      toolInvocations: m.toolInvocations || undefined
+    };
+  });
+
   const serializedProject = {
     id: project._id.toString(),
     name: project.name,
-    messages: project.messages || []
+    messages: normalizedMessages
   };
 
   return <Workspace project={serializedProject} initialPrompt={resolvedSearchParams.prompt} />;

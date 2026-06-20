@@ -124,23 +124,33 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                 What would you like to add or change?
               </div>
             ) : (
-              messages.map(m => (
-                <div key={m.id} className={`chat-message ${m.role}`}>
-                  {m.role === 'user' ? (
-                    <div className="message-bubble user">{m.content}</div>
-                  ) : (
-                    <div className="message-content ai">
-                      {m.content}
-                      {m.toolInvocations && m.toolInvocations.map((tool, idx) => (
-                        <div key={idx} className="tool-call-badge">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
-                          <span>Updating Canvas...</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))
+              messages.map(m => {
+                // @ts-ignore
+                let textContent = m.content || m.text || (m.parts ? m.parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') : '') || '';
+                
+                // Clean up any weird role prefixes that some compatible models accidentally generate
+                if (m.role === 'assistant') {
+                  textContent = textContent.replace(/^(assistant:\s*)+/gi, '').trim();
+                }
+
+                return (
+                  <div key={m.id} className={`chat-message ${m.role}`}>
+                    {m.role === 'user' ? (
+                      <div className="message-bubble user">{textContent}</div>
+                    ) : (
+                      <div className="message-content ai">
+                        {textContent}
+                        {m.toolInvocations && m.toolInvocations.map((tool, idx) => (
+                          <div key={idx} className="tool-call-badge">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+                            <span>Updating Canvas...</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
             {isLoading && (
               <div className="chat-message ai">
