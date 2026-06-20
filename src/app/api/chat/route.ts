@@ -75,6 +75,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
+    maxSteps: 10,
     system: `You are an elite, autonomous AI App Builder (similar to Lovable or v0).
 You are tasked with generating stunning, fully-functional, production-ready Next.js web applications directly from user prompts.
 You have access to a secure, remote Daytona Node.js sandbox.
