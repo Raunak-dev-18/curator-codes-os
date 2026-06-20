@@ -398,7 +398,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                         </ReactMarkdown>
                         {(m.toolInvocations || m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool'))?.map((tool: any, idx: number) => {
                           const toolName = tool.toolName || (tool.type?.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
-                          const isResult = tool.state === 'result' || tool.result !== undefined;
+                          const isResult = tool.state === 'result' || ('result' in tool && tool.result !== undefined) || tool.type === 'tool-result';
                           
                           let label = 'Working...';
                           let icon = isResult ? (
