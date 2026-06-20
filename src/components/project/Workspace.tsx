@@ -1,8 +1,11 @@
 "use client";
 
 import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Project {
   id: string;
@@ -20,33 +23,147 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
   const [input, setInput] = useState<string>('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const initialTriggered = useRef(false);
+  const isDragging = useRef(false);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(33.33);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   
   const { messages, sendMessage, status } = useChat({
-    api: '/api/chat',
-    body: { projectId: project.id },
-    initialMessages: project.messages,
+    transport: new DefaultChatTransport({
+      api: '/api/chat',
+      body: { projectId: project.id },
+    }),
+    messages: project.messages,
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!input.trim() || isLoading) return;
-    sendMessage({ text: input }, { body: { projectId: project.id } });
+    if ((!input.trim() && selectedFiles.length === 0) || isLoading) return;
+
+    let finalInput = input;
+    const imageFiles: File[] = [];
+
+    for (const file of selectedFiles) {
+      if (file.type.startsWith('image/')) {
+        imageFiles.push(file);
+      } else {
+        try {
+          const text = await file.text();
+          finalInput += `\n\n[File Content: ${file.name}]\n\`\`\`\n${text}\n\`\`\``;
+        } catch (err) {
+          console.error("Failed to read file", file.name);
+        }
+      }
+    }
+
+    const payload: any = { text: finalInput };
+    
+    if (imageFiles.length > 0) {
+      const attachments = await Promise.all(imageFiles.map(async (file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve({
+            type: 'file',
+            url: e.target?.result,
+            mediaType: file.type,
+            contentType: file.type,
+            name: file.name,
+            filename: file.name
+          });
+          reader.readAsDataURL(file);
+        });
+      }));
+      payload.files = attachments;
+    }
+
+    sendMessage(payload, { body: { projectId: project.id } });
     setInput('');
+    setSelectedFiles([]);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   // Extract the latest canvas code from tool invocations
   useEffect(() => {
     const latestMessage = messages[messages.length - 1];
-    if (latestMessage?.toolInvocations) {
-      for (const invocation of latestMessage.toolInvocations) {
-        if (invocation.toolName === 'updateCanvas' && 'args' in invocation) {
-          setCanvasCode(invocation.args.code);
+    if (latestMessage?.parts) {
+      for (const part of latestMessage.parts) {
+        if (part.type === 'tool-updateCanvas' || (part.type === 'dynamic-tool' && (part as any).toolName === 'updateCanvas')) {
+          const args = (part as any).input || (part as any).args;
+          if (args && args.code) {
+            setCanvasCode(args.code);
+            return;
+          }
         }
       }
     }
   }, [messages]);
+
+  // Sidebar resizer logic
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      
+      const newWidthPercent = (e.clientX / window.innerWidth) * 100;
+      
+      // Clamp between 33.33% (1/3) and 50% (1.5/3)
+      if (newWidthPercent >= 33.33 && newWidthPercent <= 50) {
+        setSidebarWidth(newWidthPercent);
+      } else if (newWidthPercent < 33.33) {
+        setSidebarWidth(33.33);
+      } else if (newWidthPercent > 50) {
+        setSidebarWidth(50);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = 'default';
+        document.body.style.userSelect = 'auto'; // Re-enable text selection
+        
+        // Re-enable iframe pointer events
+        const iframe = document.querySelector('.canvas-frame') as HTMLIFrameElement;
+        if (iframe) iframe.style.pointerEvents = 'auto';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none'; // Prevent text selection while dragging
+    
+    // Disable iframe pointer events to prevent it from stealing mouse movements during drag
+    const iframe = document.querySelector('.canvas-frame') as HTMLIFrameElement;
+    if (iframe) iframe.style.pointerEvents = 'none';
+  };
 
   // Trigger initial prompt
   useEffect(() => {
@@ -63,6 +180,23 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleScroll = () => {
+    if (!chatContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+    // Show button if we are more than 100px from the bottom
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setShowScrollButton(!isAtBottom);
+  };
+
+  const scrollToBottom = () => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  };
 
   const defaultCanvas = `
     <html>
@@ -117,8 +251,8 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
       <div className="workspace-main">
         {/* Left Chat Pane */}
-        <div className="workspace-sidebar">
-          <div className="chat-messages" ref={chatContainerRef}>
+        <div className="workspace-sidebar" style={{ width: `${sidebarWidth}%` }}>
+          <div className="chat-messages" ref={chatContainerRef} onScroll={handleScroll}>
             {messages.length === 0 ? (
               <div className="chat-empty">
                 What would you like to add or change?
@@ -130,22 +264,60 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                 
                 // Clean up any weird role prefixes that some compatible models accidentally generate
                 if (m.role === 'assistant') {
-                  textContent = textContent.replace(/^(assistant:\s*)+/gi, '').trim();
+                  textContent = textContent.replace(/^(assistant:?\s*)+/gi, '').trim();
                 }
+
+                // @ts-ignore
+                const attachments = m.files?.length ? m.files : (m.experimental_attachments?.length ? m.experimental_attachments : (m.parts?.filter((p: any) => p.type === 'file' || p.type === 'image' || p.type === 'image-url') || []));
 
                 return (
                   <div key={m.id} className={`chat-message ${m.role}`}>
                     {m.role === 'user' ? (
-                      <div className="message-bubble user">{textContent}</div>
-                    ) : (
-                      <div className="message-content ai">
+                      <div className="message-bubble user">
+                        {attachments.length > 0 && (
+                          <div className="message-attachments">
+                            {attachments.map((att: any, idx: number) => {
+                              const url = att.url || att.image || att.data;
+                              const isImage = att.contentType?.startsWith('image/') || att.mimeType?.startsWith('image/') || att.type === 'image' || att.type === 'image-url';
+                              return (isImage && url) ? (
+                                <img 
+                                  key={idx} 
+                                  src={url} 
+                                  alt={att.name || att.filename || 'Attachment'} 
+                                  className="message-thumbnail" 
+                                  onClick={() => setPreviewImage(url)}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              ) : null;
+                            })}
+                          </div>
+                        )}
                         {textContent}
-                        {m.toolInvocations && m.toolInvocations.map((tool, idx) => (
+                      </div>
+                    ) : (
+                      <div className="message-content ai markdown-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {textContent}
+                        </ReactMarkdown>
+                        {m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool').map((tool, idx) => (
                           <div key={idx} className="tool-call-badge">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
                             <span>Updating Canvas...</span>
                           </div>
                         ))}
+                        <div className="message-actions">
+                          <button 
+                            className="copy-btn" 
+                            onClick={() => handleCopy(textContent, m.id)}
+                            title="Copy response"
+                          >
+                            {copiedId === m.id ? (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            ) : (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                            )}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -161,8 +333,39 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
             )}
           </div>
 
-          <div className="chat-input-container">
-            <form onSubmit={handleSubmit} className="prompt-card small">
+          <div className="chat-input-wrapper">
+            {showScrollButton && (
+              <button 
+                className="scroll-to-bottom-btn" 
+                onClick={scrollToBottom}
+                title="Scroll to bottom"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+              </button>
+            )}
+            <div className="chat-input-container">
+              <form onSubmit={handleSubmit} className="prompt-card small">
+                {selectedFiles.length > 0 && (
+                  <div className="selected-files">
+                    {selectedFiles.map((f, idx) => (
+                      <div key={idx} className="file-chip">
+                        {f.type.startsWith('image/') && (
+                          <img 
+                            src={URL.createObjectURL(f)} 
+                            alt={f.name} 
+                            className="file-chip-thumb" 
+                            style={{ cursor: 'pointer' }}
+                            onClick={(e) => setPreviewImage((e.target as HTMLImageElement).src)}
+                          />
+                        )}
+                        <span className="file-name" title={f.name}>{f.name}</span>
+                        <button type="button" className="remove-file-btn" onClick={() => removeFile(idx)}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               <textarea 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -172,23 +375,38 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (input.trim()) handleSubmit(e);
+                    if (input.trim() || selectedFiles.length > 0) handleSubmit(e);
                   }
                 }}
               />
               <div className="prompt-footer">
                 <div className="prompt-tools">
-                  <button type="button" className="icon-btn" title="Attach file">
+                  <input 
+                    type="file" 
+                    multiple 
+                    ref={fileInputRef} 
+                    style={{ display: 'none' }} 
+                    onChange={handleFileChange} 
+                  />
+                  <button type="button" className="icon-btn" title="Attach file" onClick={() => fileInputRef.current?.click()}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
                   </button>
                 </div>
-                <button type="submit" className="btn-submit" title="Send" disabled={!input.trim() || isLoading}>
+                <button type="submit" className="btn-submit" title="Send" disabled={(!input.trim() && selectedFiles.length === 0) || isLoading}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
                 </button>
               </div>
             </form>
+            </div>
           </div>
         </div>
+
+        {/* Resizer Handle */}
+        <div 
+          className="workspace-resizer" 
+          onMouseDown={handleMouseDown} 
+          title="Drag to resize"
+        />
 
         {/* Right Canvas Area */}
         <div className="workspace-canvas">
@@ -202,6 +420,16 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
           </div>
         </div>
       </div>
+
+      {/* Image Preview Modal */}
+      {previewImage && (
+        <div className="image-preview-modal" onClick={() => setPreviewImage(null)}>
+          <button className="image-preview-close" onClick={() => setPreviewImage(null)}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+          <img src={previewImage} alt="Preview" className="image-preview-content" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   );
 }

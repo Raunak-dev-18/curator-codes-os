@@ -14,7 +14,7 @@ export default async function Dashboard() {
   const { user } = session;
   
   // Fetch user's projects to populate the sidebar with error handling
-  let projects = [];
+  let projects: any[] = [];
   try {
     const rawProjects = await getUserProjects(user.sub);
     projects = rawProjects.map(p => ({ id: p._id.toString(), name: p.name }));

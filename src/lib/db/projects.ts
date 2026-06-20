@@ -1,5 +1,5 @@
 import clientPromise from '../mongodb';
-import { Message } from 'ai';
+import { UIMessage } from 'ai';
 
 export interface Project {
   _id: string; // The project ID (uuid)
@@ -7,7 +7,7 @@ export interface Project {
   name: string;
   createdAt: Date;
   updatedAt: Date;
-  messages: Message[];
+  messages: UIMessage[];
 }
 
 async function getCollection() {
@@ -45,7 +45,7 @@ export async function getProject(projectId: string, userId: string) {
   return collection.findOne({ _id: projectId, userId });
 }
 
-export async function saveMessages(projectId: string, userId: string, messages: Message[]) {
+export async function saveMessages(projectId: string, userId: string, messages: UIMessage[]) {
   const collection = await getCollection();
   return collection.updateOne(
     { _id: projectId, userId },

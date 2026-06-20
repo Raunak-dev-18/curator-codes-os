@@ -4,7 +4,6 @@ import { createOpenAI } from '@ai-sdk/openai';
 export const customProvider = createOpenAI({
   apiKey: process.env.LLM_API_KEY || '',
   baseURL: process.env.LLM_BASE_URL || '',
-  compatibility: 'compatible',
 });
 
 // Helper function to get the specific model based on the ID in the environment
@@ -13,5 +12,5 @@ export const getModel = () => {
   if (!modelId) {
     throw new Error("LLM_ID environment variable is not defined");
   }
-  return customProvider(modelId);
+  return customProvider.chat(modelId);
 };
