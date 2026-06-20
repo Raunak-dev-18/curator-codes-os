@@ -201,23 +201,39 @@ Go above and beyond. Your primary goal is to make the user say "WOW" when they s
         }
       }),
     },
-    async onFinish({ text, toolCalls, toolResults }) {
+    async onFinish(event: any) {
       try {
         // Construct the assistant's response to save to MongoDB
         const assistantMessage: any = {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: text,
+          content: event.text || '',
         };
         
-        if (toolCalls && toolCalls.length > 0) {
-          assistantMessage.toolInvocations = toolCalls.map((tc, index) => ({
-            state: 'result',
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            args: tc.input,
-            result: toolResults?.[index]
-          }));
+        let allToolCalls = event.toolCalls || [];
+        let allToolResults = event.toolResults || [];
+        
+        // If multi-step is used, accumulate from steps
+        if (event.steps && event.steps.length > 0) {
+            allToolCalls = [];
+            allToolResults = [];
+            event.steps.forEach((step: any) => {
+                if (step.toolCalls) allToolCalls.push(...step.toolCalls);
+                if (step.toolResults) allToolResults.push(...step.toolResults);
+            });
+        }
+        
+        if (allToolCalls && allToolCalls.length > 0) {
+          assistantMessage.toolInvocations = allToolCalls.map((tc: any, index: number) => {
+            const tr = allToolResults.find((r: any) => r.toolCallId === tc.toolCallId) || allToolResults[index];
+            return {
+              state: 'result',
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              args: tc.args || tc.input || {},
+              result: tr ? tr.result : undefined
+            };
+          });
         }
         
         // Save the updated history including the AI's response
