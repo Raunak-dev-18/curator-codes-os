@@ -52,6 +52,11 @@ export function getProjectSandboxName(projectId: string): string {
   return sandboxName;
 }
 
+function getLegacyProjectSandboxName(projectId: string): string {
+  const safeId = projectId.replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
+  return `${DAYTONA_SANDBOX_PREFIX}-${safeId}`.slice(0, 32);
+}
+
 export const getDaytonaClient = (): Daytona => {
   const apiKey = process.env.DAYTONA_API_KEY;
   const apiUrl = process.env.DAYTONA_API_URL;
@@ -77,12 +82,13 @@ export const getDaytonaClient = (): Daytona => {
 export async function getProjectSandbox(projectId: string) {
   const daytona = getDaytonaClient();
   const sandboxName = getProjectSandboxName(projectId);
+  const legacySandboxName = getLegacyProjectSandboxName(projectId);
 
   try {
     const iter = daytona.list({ name: sandboxName });
 
     for await (const sb of iter) {
-      if (sb.name === sandboxName) return sb;
+      if (sb.name === sandboxName || sb.name === legacySandboxName) return sb;
     }
   } catch (err) {
     const details = getErrorDetails(err);

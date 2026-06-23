@@ -110,6 +110,15 @@ function describeTool(tool: any, index: number): AgentActivity {
         detail: input.path,
         path: input.path,
       };
+    case 'write_files':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Edited files' : 'Editing files',
+        detail: Array.isArray(input.files) ? `${input.files.length} files` : 'Multiple files',
+        path: Array.isArray(input.files) ? input.files[0]?.path : undefined,
+      };
     case 'read_file':
       return {
         id,
@@ -211,10 +220,6 @@ function collectRecentActivities(messages: any[], isLoading: boolean): AgentActi
   return activities.slice(-6);
 }
 
-function getRecentFileActivity(activities: AgentActivity[]) {
-  return [...activities].reverse().find((activity) => activity.path);
-}
-
 function getCompletedWorkspaceMutationSignature(messages: any[]) {
   const entries: string[] = [];
 
@@ -224,7 +229,7 @@ function getCompletedWorkspaceMutationSignature(messages: any[]) {
 
     for (const tool of [...parts, ...legacyTools]) {
       const toolName = getToolName(tool);
-      if (!['write_file', 'delete_file', 'move_file', 'execute_command', 'sync_project_files'].includes(toolName)) continue;
+      if (!['write_file', 'write_files', 'delete_file', 'move_file', 'execute_command', 'sync_project_files'].includes(toolName)) continue;
       if (getToolStatus(tool) !== 'done') continue;
 
       const input = getToolInput(tool);
@@ -297,6 +302,7 @@ function ActivityIcon({ activity }: { activity: AgentActivity }) {
     case 'execute_command':
       return <Terminal width={14} height={14} />;
     case 'write_file':
+    case 'write_files':
     case 'read_file':
     case 'delete_file':
     case 'move_file':
@@ -318,7 +324,7 @@ function ActivityIcon({ activity }: { activity: AgentActivity }) {
 function ActivityProgress({ activity }: { activity: AgentActivity }) {
   if (activity.status !== 'working') return null;
 
-  if (activity.toolName === 'write_file') {
+  if (activity.toolName === 'write_file' || activity.toolName === 'write_files') {
     return (
       <span className="activity-write-lines" aria-hidden="true">
         <span />
@@ -366,25 +372,6 @@ function AgentActivityPanel({ activities, isLoading }: { activities: AgentActivi
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function ToolExecutionStrip({ activities, isLoading }: { activities: AgentActivity[]; isLoading: boolean }) {
-  if (!isLoading && activities.length === 0) return null;
-
-  const visibleActivities = activities.length > 0
-    ? activities.slice(-4)
-    : [{ id: 'thinking-strip', label: 'Planning build steps', status: 'working' as const, toolName: 'thinking' }];
-
-  return (
-    <div className="tool-execution-strip">
-      {visibleActivities.map((activity) => (
-        <div key={activity.id} className={`tool-execution-pill ${activity.status}`}>
-          <ActivityIcon activity={activity} />
-          <span>{activity.label}</span>
-        </div>
-      ))}
     </div>
   );
 }
@@ -480,9 +467,6 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
   const isLoading = status === 'submitted' || status === 'streaming';
   const activities = collectRecentActivities(messages, isLoading);
-  const recentFileActivity = getRecentFileActivity(activities);
-  const activeCommandActivity = [...activities].reverse().find((activity) => activity.toolName === 'execute_command');
-  const activePreviewActivity = [...activities].reverse().find((activity) => activity.toolName === 'get_preview_url' || activity.toolName === 'updateCanvas');
   const fileMutationSignatureRef = useRef('');
 
   const handleCopy = (text: string, id: string) => {
@@ -560,13 +544,15 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
     fileMutationSignatureRef.current = nextSignature;
     setFileRefreshKey((key) => key + 1);
 
-    if (recentFileActivity?.path) {
+    const latestFileWrite = [...activities]
+      .reverse()
+      .find((activity) => (activity.toolName === 'write_file' || activity.toolName === 'write_files') && activity.path);
+
+    if (latestFileWrite?.path) {
       setViewMode('code');
-      if (recentFileActivity.toolName === 'write_file') {
-        handleFileSelect(recentFileActivity.path);
-      }
+      handleFileSelect(latestFileWrite.path);
     }
-  }, [messages, recentFileActivity?.path, recentFileActivity?.toolName]);
+  }, [activities, messages]);
 
   // Sidebar resizer logic
   useEffect(() => {
@@ -888,20 +874,8 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
         {/* Right Canvas / Code Area */}
         <div className="workspace-canvas" style={{ alignItems: 'stretch' }}>
-          <ToolExecutionStrip activities={activities} isLoading={isLoading} />
           {viewMode === 'preview' ? (
             <div className="canvas-wrapper" style={{ flex: 1, width: '100%', height: '100%' }}>
-              {(isLoading || activePreviewActivity) && (
-                <div className="preview-status-bar">
-                  <span className="preview-status-icon">
-                    {isLoading ? <Loader2 width={14} height={14} className="spin-icon" /> : <CheckCircle2 width={14} height={14} />}
-                  </span>
-                  <span className={isLoading ? 'shimmer-text' : ''}>
-                    {activePreviewActivity?.label || (isLoading ? 'Preparing live preview' : 'Preview ready')}
-                  </span>
-                  {previewUrl && <span className="preview-url-label">{previewUrl}</span>}
-                </div>
-              )}
               {previewUrl ? (
                 <iframe
                   src={previewUrl}
@@ -929,24 +903,6 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                   <span>Explorer</span>
                   {isLoading && <RefreshCw width="13" height="13" className="spin-icon" />}
                 </div>
-                {recentFileActivity && (
-                  <div className={`code-agent-status ${recentFileActivity.status}`}>
-                    <FileCode2 width={14} height={14} />
-                    <div>
-                      <strong>{recentFileActivity.label}</strong>
-                      <span>{recentFileActivity.path}</span>
-                    </div>
-                  </div>
-                )}
-                {activeCommandActivity && (
-                  <div className={`code-agent-status command ${activeCommandActivity.status}`}>
-                    <Terminal width={14} height={14} />
-                    <div>
-                      <strong>{activeCommandActivity.label}</strong>
-                      <span>{activeCommandActivity.detail}</span>
-                    </div>
-                  </div>
-                )}
                 <div style={{ padding: '0 1rem 0.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', background: '#000', borderRadius: '4px', border: '1px solid #333', padding: '2px 6px' }}>
                     <Search width="12" height="12" color="#737373" />

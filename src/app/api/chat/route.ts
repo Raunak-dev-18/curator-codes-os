@@ -7,7 +7,7 @@ import { revalidatePath } from 'next/cache';
 import { getProjectSandbox } from '../../../lib/daytona';
 import { normalizeDirectoryPath, normalizeProjectPath } from '../../../lib/project-paths';
 import { syncSandboxFilesToProject } from '../../../lib/sandbox-sync';
-import { CANVAS_FALLBACK_FILE, isRenderableCanvasCode } from '../../../lib/canvas-preview';
+import { isRenderableCanvasCode } from '../../../lib/canvas-preview';
 
 // Allow long-running operations
 export const maxDuration = 60;
@@ -100,7 +100,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
-    stopWhen: stepCountIs(10),
+    stopWhen: stepCountIs(20),
     system: `You are an elite, autonomous AI App Builder (like Lovable.dev or Replit Agent).
 Your singular job is to build fully-functional, beautiful, and production-ready Next.js web applications directly from user prompts.
 You have access to a secure, remote Daytona Node.js sandbox.
@@ -108,8 +108,9 @@ You have access to a secure, remote Daytona Node.js sandbox.
 ## 🎯 Core Directives
 1. **Act Autonomously**: Do not ask for permission. When a user gives a prompt, use your tools to build it end-to-end.
 2. **Write Actual Code**: Do NOT just run 'create-next-app' and stop. You MUST write the actual application logic, components, and pages using the 'write_file' tool. A generated boilerplate is not an app.
-3. **Premium Aesthetics**: Your UI/UX must be breathtaking. Use Tailwind CSS, glassmorphism, subtle gradients, rich shadows, and framer-motion micro-animations.
-4. **Use the existing sandbox**: Never create nested apps such as "blog-app" inside the sandbox. Work in "." unless the user explicitly asks for a subfolder.
+3. **Build Full Next.js Apps**: Do not build one-off HTML pages, CDN prototypes, or updateCanvas-only demos. Build a real App Router project with src/app files, components, package.json, and server/client logic when needed.
+4. **Premium Aesthetics**: Your UI/UX must be breathtaking. Use Tailwind CSS, glassmorphism, subtle gradients, rich shadows, and framer-motion micro-animations.
+5. **Use the existing sandbox**: Never create nested apps such as "blog-app" inside the sandbox. Work in "." unless the user explicitly asks for a subfolder.
 
 ## 🚀 The Multi-Step Agentic Workflow
 You MUST follow this exact loop for every project:
@@ -122,9 +123,11 @@ You MUST follow this exact loop for every project:
 
 **Step 2: Architecture & Coding (CRITICAL STEP)**
 - You must physically write the code for the user's request. 
-- Use 'write_file' to create or overwrite 'src/app/page.tsx', 'src/app/globals.css', and any necessary UI components.
+- Use 'write_file' or 'write_files' to create or overwrite 'src/app/page.tsx', 'src/app/layout.tsx', 'src/app/globals.css', and any necessary UI components.
+- Prefer 'write_files' when creating multiple files so the database-backed explorer updates in one atomic step.
+- For full-stack features, create Route Handlers under 'src/app/api/**/route.ts' and shared modules under 'src/lib/**' using 'write_file' or 'write_files'.
 - You can use 'delete_file' or 'move_file' to manage the file system.
-- **IMPORTANT**: The user's IDE reads synced project files. Use 'write_file' for authored files and 'sync_project_files' after command-generated files. Do not skip this step.
+- **IMPORTANT**: The user's IDE reads synced project files. Use 'write_file'/'write_files' for authored files and 'sync_project_files' after command-generated files. Do not skip this step.
 
 **Step 3: Version Control (Optional)**
 - If the user asks you to save or commit work, use 'git_commit' and 'git_push'.
@@ -135,33 +138,27 @@ You MUST follow this exact loop for every project:
 - Use 'get_preview_url' with port '3000' to fetch the live URL.
 
 **Step 5: Render to User**
-- The UI automatically renders URLs returned by 'get_preview_url'. Do not pass compiled JavaScript bundles or raw app code to 'updateCanvas'.
+- The UI automatically renders URLs returned by 'get_preview_url'. Do not pass HTML, compiled JavaScript bundles, or raw app code to 'updateCanvas'.
 
 ## 🚫 Strict Rules
 1. **NO RAW CODE IN CHAT**: NEVER output raw markdown code blocks (e.g. tsx code blocks) in your chat messages. Only use 'write_file'.
 2. **CONCISE CHAT**: Keep chat text to one short sentence while building. The UI shows thinking, commands, file edits, and preview progress.
 3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text.
 4. **NO BUNDLES AS PREVIEW**: Never send minified/bundled JavaScript to 'updateCanvas'. Use 'get_preview_url' for live preview.
+5. **NO STATIC HTML APPS**: If you want to display UI, write the equivalent Next.js source files with 'write_file'.
 
 Remember: Scaffolding is just step 1. You haven't built the app until you've written the custom React components via 'write_file'! Make the user say "WOW".`,
     messages: modelMessages,
     tools: {
       updateCanvas: tool({
-        description: 'Update the preview canvas only with a preview URL iframe or a complete HTML document. Do not pass bundled JavaScript or raw source code.',
+        description: 'Legacy preview-status tool. Only use this for a preview URL iframe after get_preview_url. Do not use it to build apps or send HTML/source code.',
         inputSchema: z.object({
-          code: z.string().describe('A preview URL iframe or complete HTML document. Prefer get_preview_url for running apps.'),
+          code: z.string().describe('A preview URL iframe only. Do not pass complete HTML, React, JavaScript bundles, or source code.'),
           explanation: z.string().describe('A brief explanation of what was built or changed.')
         }),
         execute: async ({ code, explanation }) => {
           if (isRenderableCanvasCode(code)) {
-            try {
-              const { saveProjectFile } = await import('../../../lib/db/projects');
-              await saveProjectFile(projectId, userId, CANVAS_FALLBACK_FILE, code);
-              return `Preview updated: ${explanation}\nSaved fallback file: ${CANVAS_FALLBACK_FILE}`;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : 'Unknown save error';
-              return `Preview updated: ${explanation}\nFailed to save fallback file: ${message}`;
-            }
+            return `Rejected static HTML preview. Build a full Next.js app by writing src/app/page.tsx, src/app/layout.tsx, src/app/globals.css, and any supporting components with write_file, then run npm run dev and get_preview_url.`;
           }
 
           return `Preview updated: ${explanation}`;
@@ -173,6 +170,9 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           command: z.string().describe('The bash command to execute.')
         }),
         execute: async ({ command }) => {
+          const commandError = validateSandboxCommand(command);
+          if (commandError) return commandError;
+
           try {
             const sandbox = await getProjectSandbox(projectId);
             const response = await sandbox.process.executeCommand(command);
@@ -201,9 +201,12 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           path: z.string().describe('Absolute or relative path to the file.')
         }),
         execute: async ({ path }) => {
-          const sandbox = await getProjectSandbox(projectId);
           try {
             const cleanPath = normalizeProjectPath(path);
+            const dbFile = (await getProjectFiles(projectId, userId)).find((file) => file.path === cleanPath);
+            if (dbFile) return dbFile.content;
+
+            const sandbox = await getProjectSandbox(projectId);
             const buf = await sandbox.fs.downloadFile(cleanPath);
             return buf.toString('utf8');
           } catch (err: any) {
@@ -218,20 +221,66 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           content: z.string().describe('The file contents to write.')
         }),
         execute: async ({ path, content }) => {
-          const sandbox = await getProjectSandbox(projectId);
           try {
             const cleanPath = normalizeProjectPath(path);
-            const buf = Buffer.from(content, 'utf8');
-            await sandbox.fs.uploadFile(buf, cleanPath);
-            
-            // Sync to Database
-            const { saveProjectFile } = await import('../../../lib/db/projects');
+
+            // Database is the source of truth for the UI; save here first even if Daytona is unavailable.
             await saveProjectFile(projectId, userId, cleanPath, content);
 
-            return `Successfully wrote to ${cleanPath} and synced to DB`;
+            try {
+              const sandbox = await getProjectSandbox(projectId);
+              const buf = Buffer.from(content, 'utf8');
+              await sandbox.fs.uploadFile(buf, cleanPath);
+              return `Successfully wrote ${cleanPath} to DB and Daytona`;
+            } catch (sandboxErr) {
+              const message = sandboxErr instanceof Error ? sandboxErr.message : 'Unknown Daytona sync error';
+              return `Successfully wrote ${cleanPath} to DB. Daytona sync failed: ${message}`;
+            }
           } catch (err: any) {
             return `Failed to write file: ${err.message}`;
           }
+        }
+      }),
+      write_files: tool({
+        description: 'Write multiple source files. This saves every file to the database first so the UI file explorer updates immediately, then attempts Daytona sync.',
+        inputSchema: z.object({
+          files: z.array(z.object({
+            path: z.string().describe('Relative project path, for example src/app/page.tsx.'),
+            content: z.string().describe('Complete file contents.'),
+          })).min(1).max(30),
+        }),
+        execute: async ({ files }) => {
+          const savedPaths: string[] = [];
+          const failedPaths: string[] = [];
+
+          for (const file of files) {
+            try {
+              const cleanPath = normalizeProjectPath(file.path);
+              await saveProjectFile(projectId, userId, cleanPath, file.content);
+              savedPaths.push(cleanPath);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown DB save error';
+              failedPaths.push(`${file.path}: ${message}`);
+            }
+          }
+
+          let daytonaSummary = 'Daytona sync skipped because no files were saved.';
+          if (savedPaths.length > 0) {
+            try {
+              const sandbox = await getProjectSandbox(projectId);
+              for (const file of files) {
+                const cleanPath = normalizeProjectPath(file.path);
+                if (!savedPaths.includes(cleanPath)) continue;
+                await sandbox.fs.uploadFile(Buffer.from(file.content, 'utf8'), cleanPath);
+              }
+              daytonaSummary = `Synced ${savedPaths.length} files to Daytona.`;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown Daytona sync error';
+              daytonaSummary = `Daytona sync failed: ${message}`;
+            }
+          }
+
+          return `Saved ${savedPaths.length} files to DB: ${savedPaths.join(', ')}.${failedPaths.length ? ` Failed: ${failedPaths.join('; ')}.` : ''} ${daytonaSummary}`;
         }
       }),
       list_files: tool({
@@ -403,7 +452,7 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         }
       }),
       get_preview_url: tool({
-        description: 'Get a public URL to preview the running web application on a specific port (e.g. 3000 for Next.js). Call this once the app is running and tell the user the URL to visit or open it in an iframe using updateCanvas.',
+        description: 'Get a public URL to preview the running web application on a specific port (e.g. 3000 for Next.js). The UI renders this URL automatically.',
         inputSchema: z.object({
           port: z.number().describe('The port the web server is running on (usually 3000).')
         }),
