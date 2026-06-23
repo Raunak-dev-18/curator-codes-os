@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { auth0 } from '../../../../lib/auth0';
-import { getProjectFiles } from '../../../../lib/db/projects';
+import { getProject, getProjectFiles } from '../../../../lib/db/projects';
 import { getProjectSandbox } from '../../../../lib/daytona';
+import { normalizeProjectPath } from '../../../../lib/project-paths';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,15 +21,20 @@ export async function GET(req: Request) {
   }
 
   try {
-    const allFiles = await getProjectFiles(projectId);
-    const cleanPath = path.startsWith('./') ? path.slice(2) : path;
+    const project = await getProject(projectId, session.user.sub);
+    if (!project) {
+      return new NextResponse('Project not found', { status: 404 });
+    }
+
+    const cleanPath = normalizeProjectPath(path);
+    const allFiles = await getProjectFiles(projectId, session.user.sub);
     const file = allFiles.find(f => f.path === cleanPath);
 
     if (!file) {
       // Fallback to Daytona for backward compatibility with older projects
       try {
         const sandbox = await getProjectSandbox(projectId);
-        const fileBuffer = await sandbox.fs.downloadFile(path);
+        const fileBuffer = await sandbox.fs.downloadFile(cleanPath);
         return new NextResponse(fileBuffer.toString('utf8'), {
           headers: { 'Content-Type': 'text/plain' }
         });

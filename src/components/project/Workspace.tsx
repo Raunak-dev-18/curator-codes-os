@@ -9,7 +9,7 @@ import remarkGfm from 'remark-gfm';
 import Editor from '@monaco-editor/react';
 import { FileExplorer } from './FileExplorer';
 import { ContextMenu } from './ContextMenu';
-import { Search, X, Settings } from 'lucide-react';
+import { CheckCircle2, Code2, Eye, FileCode2, FolderTree, Loader2, Search, Settings, Sparkles, Terminal, X } from 'lucide-react';
 
 interface Project {
   id: string;
@@ -20,6 +20,230 @@ interface Project {
 interface WorkspaceProps {
   project: Project;
   initialPrompt?: string;
+}
+
+interface AgentActivity {
+  id: string;
+  label: string;
+  detail?: string;
+  status: 'working' | 'done' | 'error';
+  toolName?: string;
+}
+
+function isToolPart(part: any) {
+  return typeof part?.type === 'string' && (part.type.startsWith('tool-') || part.type === 'dynamic-tool');
+}
+
+function getToolName(tool: any) {
+  if (tool?.toolName) return tool.toolName;
+  if (typeof tool?.type === 'string' && tool.type.startsWith('tool-')) {
+    return tool.type.slice('tool-'.length);
+  }
+  return 'tool';
+}
+
+function getToolInput(tool: any) {
+  const rawInput = tool?.input ?? tool?.args ?? tool?.inputText ?? tool?.argsText ?? {};
+
+  if (typeof rawInput === 'string') {
+    try {
+      return JSON.parse(rawInput);
+    } catch {
+      return { value: rawInput };
+    }
+  }
+
+  return rawInput && typeof rawInput === 'object' ? rawInput : {};
+}
+
+function getToolStatus(tool: any): AgentActivity['status'] {
+  if (tool?.state === 'output-error' || tool?.errorText) return 'error';
+  if (
+    tool?.state === 'result' ||
+    tool?.state === 'output-available' ||
+    tool?.type === 'tool-result' ||
+    tool?.output !== undefined ||
+    tool?.result !== undefined
+  ) {
+    return 'done';
+  }
+
+  return 'working';
+}
+
+function describeTool(tool: any, index: number): AgentActivity {
+  const toolName = getToolName(tool);
+  const input = getToolInput(tool);
+  const status = getToolStatus(tool);
+  const id = tool?.toolCallId || tool?.id || `${toolName}-${index}`;
+
+  switch (toolName) {
+    case 'execute_command':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Ran command' : 'Running command',
+        detail: input.command,
+      };
+    case 'write_file':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Edited file' : 'Editing file',
+        detail: input.path,
+      };
+    case 'read_file':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Read file' : 'Reading file',
+        detail: input.path,
+      };
+    case 'list_files':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Listed files' : 'Scanning files',
+        detail: input.path || '.',
+      };
+    case 'delete_file':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Deleted file' : 'Deleting file',
+        detail: input.path,
+      };
+    case 'move_file':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Moved file' : 'Moving file',
+        detail: input.source && input.destination ? `${input.source} -> ${input.destination}` : input.source,
+      };
+    case 'get_preview_url':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Prepared preview' : 'Preparing preview',
+        detail: input.port ? `port ${input.port}` : undefined,
+      };
+    case 'updateCanvas':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Updated preview' : 'Updating preview',
+        detail: input.explanation,
+      };
+    case 'git_clone':
+    case 'git_commit':
+    case 'git_status':
+    case 'git_push':
+    case 'git_pull':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Updated git state' : 'Working with git',
+        detail: input.path || input.url || input.message,
+      };
+    default:
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Completed action' : 'Working',
+        detail: toolName,
+      };
+  }
+}
+
+function collectRecentActivities(messages: any[], isLoading: boolean): AgentActivity[] {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
+  const parts = lastAssistant?.parts?.filter(isToolPart) || [];
+  const legacyTools = (lastAssistant as any)?.toolInvocations || [];
+  const activities = [...parts, ...legacyTools].map(describeTool);
+
+  if (isLoading && activities.length === 0) {
+    return [{
+      id: 'thinking',
+      label: 'Thinking through the build',
+      detail: 'Planning files, dependencies, and preview steps',
+      status: 'working',
+      toolName: 'thinking',
+    }];
+  }
+
+  return activities.slice(-6);
+}
+
+function ActivityIcon({ activity }: { activity: AgentActivity }) {
+  if (activity.status === 'done') return <CheckCircle2 width={14} height={14} />;
+  if (activity.status === 'error') return <X width={14} height={14} />;
+
+  switch (activity.toolName) {
+    case 'execute_command':
+      return <Terminal width={14} height={14} />;
+    case 'write_file':
+    case 'read_file':
+    case 'delete_file':
+    case 'move_file':
+      return <FileCode2 width={14} height={14} />;
+    case 'list_files':
+      return <FolderTree width={14} height={14} />;
+    case 'updateCanvas':
+    case 'get_preview_url':
+      return <Eye width={14} height={14} />;
+    case 'thinking':
+      return <Sparkles width={14} height={14} />;
+    default:
+      return <Code2 width={14} height={14} />;
+  }
+}
+
+function AgentActivityPanel({ activities, isLoading }: { activities: AgentActivity[]; isLoading: boolean }) {
+  if (!isLoading && activities.length === 0) return null;
+
+  const headline = isLoading
+    ? activities.find((activity) => activity.status === 'working')?.label || 'Working'
+    : 'Latest actions';
+
+  return (
+    <div className="agent-work-panel">
+      <div className="agent-work-header">
+        <div className="agent-orb">
+          {isLoading ? <Loader2 width={14} height={14} className="spin-icon" /> : <CheckCircle2 width={14} height={14} />}
+        </div>
+        <div>
+          <div className={isLoading ? 'shimmer-text' : ''}>{headline}</div>
+          <div className="agent-work-subtitle">AI builder workspace activity</div>
+        </div>
+      </div>
+
+      {activities.length > 0 && (
+        <div className="agent-activity-list">
+          {activities.map((activity) => (
+            <div key={activity.id} className={`agent-activity-row ${activity.status}`}>
+              <span className="agent-activity-icon">
+                <ActivityIcon activity={activity} />
+              </span>
+              <span className="agent-activity-copy">
+                <span className="agent-activity-label">{activity.label}</span>
+                {activity.detail && <span className="agent-activity-detail">{activity.detail}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Workspace({ project, initialPrompt }: WorkspaceProps) {
@@ -96,6 +320,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  const activities = collectRecentActivities(messages, isLoading);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -171,6 +396,12 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
           }
         }
       }
+    }
+
+    const legacyCanvasTool = (latestMessage as any)?.toolInvocations?.find((tool: any) => tool.toolName === 'updateCanvas');
+    const legacyArgs = legacyCanvasTool?.args || legacyCanvasTool?.input;
+    if (legacyArgs?.code) {
+      setCanvasCode(legacyArgs.code);
     }
   }, [messages]);
 
@@ -396,9 +627,9 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {textContent}
                         </ReactMarkdown>
-                        {(m.toolInvocations || m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool'))?.map((tool: any, idx: number) => {
+                        {((m as any).toolInvocations || m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool'))?.map((tool: any, idx: number) => {
                           const toolName = tool.toolName || (tool.type?.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
-                          const isResult = tool.state === 'result' || ('result' in tool && tool.result !== undefined) || tool.type === 'tool-result';
+                          const isResult = tool.state === 'result' || tool.state === 'output-available' || ('result' in tool && tool.result !== undefined) || ('output' in tool && tool.output !== undefined) || tool.type === 'tool-result';
                           
                           let label = 'Working...';
                           let icon = isResult ? (
@@ -414,8 +645,11 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                           // Parse args to show specific info
                           let args = {} as any;
                           try {
-                            if (tool.args && typeof tool.args === 'object') args = tool.args;
+                            if (tool.input && typeof tool.input === 'object') args = tool.input;
+                            else if (typeof tool.input === 'string') args = JSON.parse(tool.input);
+                            else if (tool.args && typeof tool.args === 'object') args = tool.args;
                             else if (typeof tool.args === 'string') args = JSON.parse(tool.args);
+                            else if (typeof tool.inputText === 'string') args = JSON.parse(tool.inputText);
                             else if (typeof tool.argsText === 'string') args = JSON.parse(tool.argsText);
                           } catch (e) {}
 
@@ -471,6 +705,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                 );
               })
             )}
+            <AgentActivityPanel activities={activities} isLoading={isLoading} />
             {isLoading && (
               <div className="chat-message ai">
                 <div className="typing-indicator">

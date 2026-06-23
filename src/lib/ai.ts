@@ -1,16 +1,34 @@
 import { createOpenAI } from '@ai-sdk/openai';
 
-// Create a custom OpenAI instance pointing to the specified base URL and using the specified API key
-export const customProvider = createOpenAI({
-  apiKey: process.env.LLM_API_KEY || '',
-  baseURL: process.env.LLM_BASE_URL || '',
-});
+let customProvider: ReturnType<typeof createOpenAI> | null = null;
 
-// Helper function to get the specific model based on the ID in the environment
 export const getModel = () => {
   const modelId = process.env.LLM_ID;
   if (!modelId) {
-    throw new Error("LLM_ID environment variable is not defined");
+    throw new Error('LLM_ID environment variable is not defined');
   }
-  return customProvider.chat(modelId);
+
+  return getProvider().chat(modelId);
 };
+
+function getProvider() {
+  if (!customProvider) {
+    const apiKey = process.env.LLM_API_KEY;
+    const baseURL = process.env.LLM_BASE_URL;
+
+    if (!apiKey) {
+      throw new Error('LLM_API_KEY environment variable is not defined');
+    }
+
+    if (!baseURL) {
+      throw new Error('LLM_BASE_URL environment variable is not defined');
+    }
+
+    customProvider = createOpenAI({
+      apiKey,
+      baseURL,
+    });
+  }
+
+  return customProvider;
+}

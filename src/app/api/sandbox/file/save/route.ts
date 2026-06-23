@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { auth0 } from '../../../../../lib/auth0';
 import { getProjectSandbox } from '../../../../../lib/daytona';
-import { saveProjectFile } from '../../../../../lib/db/projects';
+import { getProject, saveProjectFile } from '../../../../../lib/db/projects';
+import { normalizeProjectPath } from '../../../../../lib/project-paths';
 
 export async function POST(req: Request) {
   const session = await auth0.getSession();
@@ -14,14 +15,21 @@ export async function POST(req: Request) {
       return new NextResponse('Missing parameters', { status: 400 });
     }
 
+    const project = await getProject(projectId, session.user.sub);
+    if (!project) {
+      return new NextResponse('Project not found', { status: 404 });
+    }
+
+    const cleanPath = normalizeProjectPath(path);
+
     // 1. Save to Database
-    await saveProjectFile(projectId, path, content);
+    await saveProjectFile(projectId, session.user.sub, cleanPath, content);
 
     // 2. Save to Daytona Sandbox (sync)
     try {
       const sandbox = await getProjectSandbox(projectId);
       const buf = Buffer.from(content, 'utf8');
-      await sandbox.fs.uploadFile(buf, path);
+      await sandbox.fs.uploadFile(buf, cleanPath);
     } catch (daytonaErr) {
       console.warn('Failed to sync to Daytona, but saved to DB:', daytonaErr);
       // We don't fail the request if Daytona is offline or sleeping,

@@ -1,10 +1,11 @@
 import { streamText, tool, convertToModelMessages, stepCountIs } from 'ai';
 import { getModel } from '../../../lib/ai';
 import { auth0 } from '../../../lib/auth0';
-import { saveMessages, deleteProjectFile, renameProjectFile } from '../../../lib/db/projects';
+import { saveMessages, deleteProjectFile, getProject, renameProjectFile } from '../../../lib/db/projects';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
-import { getDaytonaClient, getProjectSandbox } from '../../../lib/daytona';
+import { getProjectSandbox } from '../../../lib/daytona';
+import { normalizeDirectoryPath, normalizeProjectPath } from '../../../lib/project-paths';
 
 // Allow long-running operations
 export const maxDuration = 60;
@@ -18,16 +19,14 @@ export async function POST(req: Request) {
   const userId = session.user.sub;
   const payload = await req.json();
   const { messages, projectId } = payload;
-  
-  const fs = require('fs');
-  fs.writeFileSync('last_payload.json', JSON.stringify({
-     lastMessage: messages[messages.length - 1],
-     projectId
-  }, null, 2));
 
   if (!projectId) {
     console.error("Missing Project ID");
     return new Response('Project ID is required', { status: 400 });
+  }
+
+  if (!(await getProject(projectId, userId))) {
+    return new Response('Project not found', { status: 404 });
   }
 
   // Save the incoming user message to the DB (don't fail the request if it fails)
@@ -90,7 +89,7 @@ You MUST follow this exact loop for every project:
 
 **Step 1: Code Acquisition & Scaffolding**
 - If working with an existing repo, use 'git_clone' to clone it.
-- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*"'
+- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes'
 - Wait for it to finish, then 'execute_command': 'npm install framer-motion lucide-react clsx tailwind-merge'
 
 **Step 2: Architecture & Coding (CRITICAL STEP)**
@@ -123,7 +122,10 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         inputSchema: z.object({
           code: z.string().describe('The complete HTML document or React code to render. You can use standard HTML/CSS or external CDNs.'),
           explanation: z.string().describe('A brief explanation of what was built or changed.')
-        })
+        }),
+        execute: async ({ explanation }) => {
+          return `Preview updated: ${explanation}`;
+        }
       }),
       execute_command: tool({
         description: 'Run a shell command in the remote sandbox (e.g. npm run dev, npx create-next-app, npm install).',
@@ -144,7 +146,8 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         execute: async ({ path }) => {
           const sandbox = await getProjectSandbox(projectId);
           try {
-            const buf = await sandbox.fs.downloadFile(path);
+            const cleanPath = normalizeProjectPath(path);
+            const buf = await sandbox.fs.downloadFile(cleanPath);
             return buf.toString('utf8');
           } catch (err: any) {
             return `Failed to read file: ${err.message}`;
@@ -160,14 +163,15 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         execute: async ({ path, content }) => {
           const sandbox = await getProjectSandbox(projectId);
           try {
+            const cleanPath = normalizeProjectPath(path);
             const buf = Buffer.from(content, 'utf8');
-            await sandbox.fs.uploadFile(buf, path);
+            await sandbox.fs.uploadFile(buf, cleanPath);
             
             // Sync to Database
             const { saveProjectFile } = await import('../../../lib/db/projects');
-            await saveProjectFile(projectId, path, content);
+            await saveProjectFile(projectId, userId, cleanPath, content);
 
-            return `Successfully wrote to ${path} and synced to DB`;
+            return `Successfully wrote to ${cleanPath} and synced to DB`;
           } catch (err: any) {
             return `Failed to write file: ${err.message}`;
           }
@@ -181,7 +185,8 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         execute: async ({ path }) => {
           const sandbox = await getProjectSandbox(projectId);
           try {
-            const files = await sandbox.fs.listFiles(path);
+            const cleanPath = normalizeDirectoryPath(path);
+            const files = await sandbox.fs.listFiles(cleanPath);
             return files.map(f => `${f.isDir ? '[DIR]' : '[FILE]'} ${f.name} - ${f.size} bytes`).join('\n');
           } catch (err: any) {
             return `Failed to list files: ${err.message}`;
@@ -196,9 +201,10 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         execute: async ({ path }) => {
           const sandbox = await getProjectSandbox(projectId);
           try {
-            await sandbox.fs.deleteFile(path);
-            await deleteProjectFile(projectId, path);
-            return `Successfully deleted ${path}`;
+            const cleanPath = normalizeProjectPath(path);
+            await sandbox.fs.deleteFile(cleanPath, true);
+            await deleteProjectFile(projectId, userId, cleanPath);
+            return `Successfully deleted ${cleanPath}`;
           } catch (err: any) {
             return `Failed to delete file: ${err.message}`;
           }
@@ -213,9 +219,11 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         execute: async ({ source, destination }) => {
           const sandbox = await getProjectSandbox(projectId);
           try {
-            await sandbox.fs.moveFiles(source, destination);
-            await renameProjectFile(projectId, source, destination);
-            return `Successfully moved ${source} to ${destination}`;
+            const cleanSource = normalizeProjectPath(source);
+            const cleanDestination = normalizeProjectPath(destination);
+            await sandbox.fs.moveFiles(cleanSource, cleanDestination);
+            await renameProjectFile(projectId, userId, cleanSource, cleanDestination);
+            return `Successfully moved ${cleanSource} to ${cleanDestination}`;
           } catch (err: any) {
             return `Failed to move file: ${err.message}`;
           }
@@ -249,7 +257,7 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           const sandbox = await getProjectSandbox(projectId);
           try {
             const resp = await sandbox.git.commit(path, message, author, email);
-            return `Successfully committed changes. Hash: ${resp.hash}`;
+            return `Successfully committed changes. Hash: ${resp.sha}`;
           } catch (err: any) {
             return `Failed to commit changes: ${err.message}`;
           }
@@ -336,6 +344,7 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           id: crypto.randomUUID(),
           role: 'assistant',
           content: event.text || '',
+          parts: event.text ? [{ type: 'text', text: event.text }] : [],
         };
         
         let allToolCalls = event.toolCalls || [];
@@ -359,7 +368,7 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
               toolCallId: tc.toolCallId,
               toolName: tc.toolName,
               args: tc.args || tc.input || {},
-              result: tr ? tr.result : undefined
+              result: tr ? (tr.result ?? tr.output) : undefined
             };
           });
         }

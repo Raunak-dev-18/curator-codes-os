@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from 'react';
-import { FileIcon, Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, Edit2, FileText, Code, Image as ImageIcon } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, Edit2, FileText, Code, Image as ImageIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ContextMenu } from './ContextMenu';
 
@@ -28,11 +28,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
   const [renamingFile, setRenamingFile] = useState<{ name: string, fullPath: string } | null>(null);
   const [newName, setNewName] = useState('');
 
-  useEffect(() => {
-    fetchFiles();
-  }, [projectId, currentPath, onRefresh]);
-
-  const fetchFiles = async () => {
+  const fetchFiles = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/sandbox/files?projectId=${projectId}&path=${currentPath}`);
@@ -50,7 +46,11 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPath, projectId]);
+
+  useEffect(() => {
+    fetchFiles();
+  }, [fetchFiles, onRefresh]);
 
   const toggleFolder = (folderName: string) => {
     setExpandedFolders(prev => {
@@ -79,7 +79,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
     }
   };
 
-  const handleRenameSubmit = async (e: React.KeyboardEvent | React.FocusEvent, oldPath: string, isDir: boolean) => {
+  const handleRenameSubmit = async (e: React.KeyboardEvent | React.FocusEvent, oldPath: string) => {
     if ('key' in e && e.key !== 'Enter' && e.key !== 'Escape') return;
     
     if ('key' in e && e.key === 'Escape') {
@@ -151,8 +151,8 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
                     autoFocus
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
-                    onKeyDown={(e) => handleRenameSubmit(e, fullPath, true)}
-                    onBlur={(e) => handleRenameSubmit(e, fullPath, true)}
+                    onKeyDown={(e) => handleRenameSubmit(e, fullPath)}
+                    onBlur={(e) => handleRenameSubmit(e, fullPath)}
                     style={{ background: '#000', color: '#fff', border: '1px solid #007acc', outline: 'none', padding: '0 4px', width: '100%' }}
                     onClick={(e) => e.stopPropagation()}
                   />
@@ -204,8 +204,8 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
                 autoFocus
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => handleRenameSubmit(e, fullPath, false)}
-                onBlur={(e) => handleRenameSubmit(e, fullPath, false)}
+                onKeyDown={(e) => handleRenameSubmit(e, fullPath)}
+                onBlur={(e) => handleRenameSubmit(e, fullPath)}
                 style={{ background: '#000', color: '#fff', border: '1px solid #007acc', outline: 'none', padding: '0 4px', width: '100%' }}
                 onClick={(e) => e.stopPropagation()}
               />

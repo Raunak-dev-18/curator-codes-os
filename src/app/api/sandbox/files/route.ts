@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { auth0 } from '../../../../lib/auth0';
-import { getProjectFiles } from '../../../../lib/db/projects';
+import { getProject, getProjectFiles } from '../../../../lib/db/projects';
 import { getProjectSandbox } from '../../../../lib/daytona';
+import { normalizeDirectoryPath } from '../../../../lib/project-paths';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,14 +14,19 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const projectId = searchParams.get('projectId');
-  const pathParam = searchParams.get('path') || '.';
 
   if (!projectId) {
     return new NextResponse('Missing projectId', { status: 400 });
   }
 
   try {
-    const allFiles = await getProjectFiles(projectId);
+    const pathParam = normalizeDirectoryPath(searchParams.get('path') || '.');
+    const project = await getProject(projectId, session.user.sub);
+    if (!project) {
+      return new NextResponse('Project not found', { status: 404 });
+    }
+
+    const allFiles = await getProjectFiles(projectId, session.user.sub);
     
     // Fallback for older projects where DB is empty
     if (allFiles.length === 0) {
