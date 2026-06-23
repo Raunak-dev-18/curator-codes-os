@@ -1,14 +1,40 @@
 import { streamText, tool, convertToModelMessages, stepCountIs } from 'ai';
 import { getModel } from '../../../lib/ai';
 import { auth0 } from '../../../lib/auth0';
-import { saveMessages, deleteProjectFile, getProject, renameProjectFile } from '../../../lib/db/projects';
+import { saveMessages, deleteProjectFile, getProject, getProjectFiles, renameProjectFile, saveProjectFile } from '../../../lib/db/projects';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { getProjectSandbox } from '../../../lib/daytona';
 import { normalizeDirectoryPath, normalizeProjectPath } from '../../../lib/project-paths';
+import { syncSandboxFilesToProject } from '../../../lib/sandbox-sync';
+import { CANVAS_FALLBACK_FILE, isRenderableCanvasCode } from '../../../lib/canvas-preview';
 
 // Allow long-running operations
 export const maxDuration = 60;
+
+function getRequiredRootNextCommand() {
+  return 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes --force';
+}
+
+function getCreateNextAppTarget(command: string) {
+  const match = command.match(/\bcreate-next-app(?:@[^\s]+)?\s+([^\s]+)/);
+  return match?.[1];
+}
+
+function validateSandboxCommand(command: string) {
+  const createNextTarget = getCreateNextAppTarget(command);
+  if (!createNextTarget) return null;
+
+  if (createNextTarget !== '.') {
+    return `Refused to run create-next-app in nested folder "${createNextTarget}". Build in the existing project sandbox root using: ${getRequiredRootNextCommand()}`;
+  }
+
+  if (!/\s--yes(?:\s|$)/.test(command) || !/\s--force(?:\s|$)/.test(command)) {
+    return `Refused interactive or unsafe create-next-app command. Use: ${getRequiredRootNextCommand()}`;
+  }
+
+  return null;
+}
 
 export async function POST(req: Request) {
   const session = await auth0.getSession();
@@ -83,47 +109,61 @@ You have access to a secure, remote Daytona Node.js sandbox.
 1. **Act Autonomously**: Do not ask for permission. When a user gives a prompt, use your tools to build it end-to-end.
 2. **Write Actual Code**: Do NOT just run 'create-next-app' and stop. You MUST write the actual application logic, components, and pages using the 'write_file' tool. A generated boilerplate is not an app.
 3. **Premium Aesthetics**: Your UI/UX must be breathtaking. Use Tailwind CSS, glassmorphism, subtle gradients, rich shadows, and framer-motion micro-animations.
+4. **Use the existing sandbox**: Never create nested apps such as "blog-app" inside the sandbox. Work in "." unless the user explicitly asks for a subfolder.
 
 ## 🚀 The Multi-Step Agentic Workflow
 You MUST follow this exact loop for every project:
 
 **Step 1: Code Acquisition & Scaffolding**
 - If working with an existing repo, use 'git_clone' to clone it.
-- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes'
+- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes --force'
 - Wait for it to finish, then 'execute_command': 'npm install framer-motion lucide-react clsx tailwind-merge'
+- After any scaffolding, install, or generated-file command, call 'sync_project_files' so the user's file explorer updates.
 
 **Step 2: Architecture & Coding (CRITICAL STEP)**
 - You must physically write the code for the user's request. 
 - Use 'write_file' to create or overwrite 'src/app/page.tsx', 'src/app/globals.css', and any necessary UI components.
 - You can use 'delete_file' or 'move_file' to manage the file system.
-- **IMPORTANT**: The user's IDE reads from a database. ONLY files you explicitly write using the 'write_file' tool will show up in their File Explorer. Do not skip this step!
+- **IMPORTANT**: The user's IDE reads synced project files. Use 'write_file' for authored files and 'sync_project_files' after command-generated files. Do not skip this step.
 
 **Step 3: Version Control (Optional)**
 - If the user asks you to save or commit work, use 'git_commit' and 'git_push'.
 
 **Step 4: Start Server & Get URL**
-- Use 'execute_command' to start the Next.js dev server: 'nohup npm run dev > dev.log 2>&1 &'
+- Use 'execute_command' to start the Next.js dev server: 'nohup npm run dev -- --hostname 0.0.0.0 > dev.log 2>&1 &'
 - If you encounter issues, you can check 'get_entrypoint_logs' or read 'dev.log'.
 - Use 'get_preview_url' with port '3000' to fetch the live URL.
 
 **Step 5: Render to User**
-- Use 'updateCanvas' passing an iframe with the preview URL: '<iframe src="PREVIEW_URL" style="width: 100%; height: 100vh; border: none;"></iframe>'
+- The UI automatically renders URLs returned by 'get_preview_url'. Do not pass compiled JavaScript bundles or raw app code to 'updateCanvas'.
 
 ## 🚫 Strict Rules
 1. **NO RAW CODE IN CHAT**: NEVER output raw markdown code blocks (e.g. tsx code blocks) in your chat messages. Only use 'write_file'.
-2. **CONCISE CHAT**: Say "Building your application..." and let your tool calls do the talking.
-3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text. Only use 'updateCanvas'.
+2. **CONCISE CHAT**: Keep chat text to one short sentence while building. The UI shows thinking, commands, file edits, and preview progress.
+3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text.
+4. **NO BUNDLES AS PREVIEW**: Never send minified/bundled JavaScript to 'updateCanvas'. Use 'get_preview_url' for live preview.
 
 Remember: Scaffolding is just step 1. You haven't built the app until you've written the custom React components via 'write_file'! Make the user say "WOW".`,
     messages: modelMessages,
     tools: {
       updateCanvas: tool({
-        description: 'Update the preview canvas with HTML/CSS/JS code to render the requested app or component.',
+        description: 'Update the preview canvas only with a preview URL iframe or a complete HTML document. Do not pass bundled JavaScript or raw source code.',
         inputSchema: z.object({
-          code: z.string().describe('The complete HTML document or React code to render. You can use standard HTML/CSS or external CDNs.'),
+          code: z.string().describe('A preview URL iframe or complete HTML document. Prefer get_preview_url for running apps.'),
           explanation: z.string().describe('A brief explanation of what was built or changed.')
         }),
-        execute: async ({ explanation }) => {
+        execute: async ({ code, explanation }) => {
+          if (isRenderableCanvasCode(code)) {
+            try {
+              const { saveProjectFile } = await import('../../../lib/db/projects');
+              await saveProjectFile(projectId, userId, CANVAS_FALLBACK_FILE, code);
+              return `Preview updated: ${explanation}\nSaved fallback file: ${CANVAS_FALLBACK_FILE}`;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown save error';
+              return `Preview updated: ${explanation}\nFailed to save fallback file: ${message}`;
+            }
+          }
+
           return `Preview updated: ${explanation}`;
         }
       }),
@@ -133,9 +173,26 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
           command: z.string().describe('The bash command to execute.')
         }),
         execute: async ({ command }) => {
-          const sandbox = await getProjectSandbox(projectId);
-          const response = await sandbox.process.executeCommand(command);
-          return `Exit Code: ${response.exitCode}\nOutput:\n${response.result}`;
+          try {
+            const sandbox = await getProjectSandbox(projectId);
+            const response = await sandbox.process.executeCommand(command);
+            let syncSummary = '';
+
+            try {
+              const syncResult = await syncSandboxFilesToProject({ sandbox, projectId, userId });
+              syncSummary = `\n\nSynced project files: ${syncResult.synced} saved, ${syncResult.skipped} skipped${
+                syncResult.errors.length ? `, ${syncResult.errors.length} errors` : ''
+              }.`;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown sync error';
+              syncSummary = `\n\nProject file sync failed: ${message}`;
+            }
+
+            return `Exit Code: ${response.exitCode}\nOutput:\n${response.result}${syncSummary}`;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown command error';
+            return `Failed to run command: ${message}`;
+          }
         }
       }),
       read_file: tool({
@@ -190,6 +247,30 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
             return files.map(f => `${f.isDir ? '[DIR]' : '[FILE]'} ${f.name} - ${f.size} bytes`).join('\n');
           } catch (err: any) {
             return `Failed to list files: ${err.message}`;
+          }
+        }
+      }),
+      sync_project_files: tool({
+        description: 'Sync text source files from the Daytona sandbox into the database-backed file explorer.',
+        inputSchema: z.object({
+          path: z.string().default('.').describe('Directory to sync from. Use "." for the project root.'),
+        }),
+        execute: async ({ path }) => {
+          try {
+            const sandbox = await getProjectSandbox(projectId);
+            const cleanPath = normalizeDirectoryPath(path);
+            const syncResult = await syncSandboxFilesToProject({
+              sandbox,
+              projectId,
+              userId,
+              rootPath: cleanPath,
+            });
+
+            return `Synced ${syncResult.synced} files from ${cleanPath}. Skipped ${syncResult.skipped} generated or binary files.${
+              syncResult.errors.length ? ` Errors: ${syncResult.errors.slice(0, 5).join('; ')}` : ''
+            }`;
+          } catch (err: any) {
+            return `Failed to sync project files: ${err.message}`;
           }
         }
       }),
@@ -361,8 +442,14 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
         }
         
         if (allToolCalls && allToolCalls.length > 0) {
-          assistantMessage.toolInvocations = allToolCalls.map((tc: any, index: number) => {
-            const tr = allToolResults.find((r: any) => r.toolCallId === tc.toolCallId) || allToolResults[index];
+          const toolResultsById = new Map<string, any>(
+            allToolResults
+              .filter((result: any) => result?.toolCallId)
+              .map((result: any) => [result.toolCallId, result])
+          );
+
+          assistantMessage.toolInvocations = allToolCalls.map((tc: any) => {
+            const tr = toolResultsById.get(tc.toolCallId);
             return {
               state: 'result',
               toolCallId: tc.toolCallId,

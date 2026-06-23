@@ -18,9 +18,10 @@ interface FileExplorerProps {
   basePath?: string;
   searchQuery?: string;
   onRefresh?: () => void;
+  refreshKey?: number;
 }
 
-export function FileExplorer({ projectId, onFileSelect, currentPath = '.', basePath = '', searchQuery = '', onRefresh }: FileExplorerProps) {
+export function FileExplorer({ projectId, onFileSelect, currentPath = '.', basePath = '', searchQuery = '', onRefresh, refreshKey = 0 }: FileExplorerProps) {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -31,7 +32,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
   const fetchFiles = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/sandbox/files?projectId=${projectId}&path=${currentPath}`);
+      const res = await fetch(`/api/sandbox/files?projectId=${projectId}&path=${encodeURIComponent(currentPath)}`);
       if (!res.ok) throw new Error('Failed to fetch files');
       const data = await res.json();
       
@@ -50,7 +51,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
 
   useEffect(() => {
     fetchFiles();
-  }, [fetchFiles, onRefresh]);
+  }, [fetchFiles, onRefresh, refreshKey]);
 
   const toggleFolder = (folderName: string) => {
     setExpandedFolders(prev => {
@@ -112,7 +113,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
   const filteredFiles = files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.isDir);
 
   if (loading && files.length === 0) {
-    return <div style={{ padding: '1rem', fontSize: '0.75rem', color: '#737373' }}>Loading...</div>;
+    return <div className="file-explorer-state">Syncing files...</div>;
   }
 
   const getFileIcon = (name: string) => {
@@ -124,6 +125,12 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', fontSize: '0.875rem', fontFamily: 'monospace', userSelect: 'none' }}>
+      {!loading && filteredFiles.length === 0 && (
+        <div className="file-explorer-state">
+          <span>No files synced yet</span>
+          <small>Run or edit files in the sandbox to populate the explorer.</small>
+        </div>
+      )}
       {filteredFiles.map(file => {
         const fullPath = basePath ? `${basePath}/${file.name}` : file.name;
         const isExpanded = expandedFolders.has(file.name);
@@ -177,6 +184,7 @@ export function FileExplorer({ projectId, onFileSelect, currentPath = '.', baseP
                         basePath={fullPath}
                         searchQuery={searchQuery}
                         onRefresh={fetchFiles}
+                        refreshKey={refreshKey}
                       />
                     </div>
                   </motion.div>

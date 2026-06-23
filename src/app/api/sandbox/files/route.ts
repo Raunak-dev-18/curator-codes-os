@@ -3,6 +3,7 @@ import { auth0 } from '../../../../lib/auth0';
 import { getProject, getProjectFiles } from '../../../../lib/db/projects';
 import { getProjectSandbox } from '../../../../lib/daytona';
 import { normalizeDirectoryPath } from '../../../../lib/project-paths';
+import { CANVAS_FALLBACK_FILE, extractLatestCanvasHtml } from '../../../../lib/canvas-preview';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,20 +28,6 @@ export async function GET(req: Request) {
     }
 
     const allFiles = await getProjectFiles(projectId, session.user.sub);
-    
-    // Fallback for older projects where DB is empty
-    if (allFiles.length === 0) {
-      try {
-        const sandbox = await getProjectSandbox(projectId);
-        const rawFiles = await sandbox.fs.listFiles(pathParam);
-        // Filter out system files so they don't clutter the UI
-        const ignored = ['.daytona', '.bashrc', '.profile', '.bash_logout', 'node_modules', '.next', '.git'];
-        const filtered = rawFiles.filter(f => !ignored.includes(f.name));
-        return NextResponse.json({ files: filtered });
-      } catch (fallbackErr) {
-        return NextResponse.json({ files: [] });
-      }
-    }
 
     // Build a virtual directory tree based on the paths
     const filesInDir = new Map<string, { name: string, isDir: boolean, size: number }>();
@@ -69,6 +56,46 @@ export async function GET(req: Request) {
         // If it was added as a file (shouldn't happen) but we now see it's a dir, mark it as dir
         const existing = filesInDir.get(name)!;
         existing.isDir = true;
+      }
+    }
+
+    try {
+      const sandbox = await getProjectSandbox(projectId);
+      const rawFiles = await sandbox.fs.listFiles(pathParam);
+      // Filter out system files so they don't clutter the UI
+      const ignored = ['.daytona', '.bashrc', '.profile', '.bash_logout', 'node_modules', '.next', '.git', '.turbo', '.vercel', 'dist', 'build', 'coverage'];
+
+      for (const file of rawFiles) {
+        if (!file.name || ignored.includes(file.name)) continue;
+        const existing = filesInDir.get(file.name);
+
+        if (!existing) {
+          filesInDir.set(file.name, {
+            name: file.name,
+            isDir: Boolean(file.isDir),
+            size: file.size || 0,
+          });
+          continue;
+        }
+
+        if (file.isDir) {
+          existing.isDir = true;
+        }
+
+        existing.size = Math.max(existing.size, file.size || 0);
+      }
+    } catch {
+      // Daytona may be unavailable or unauthorized; DB files remain usable.
+    }
+
+    if (pathParam === '.' && filesInDir.size === 0) {
+      const canvasHtml = extractLatestCanvasHtml(project.messages || []);
+      if (canvasHtml) {
+        filesInDir.set(CANVAS_FALLBACK_FILE, {
+          name: CANVAS_FALLBACK_FILE,
+          isDir: false,
+          size: canvasHtml.length,
+        });
       }
     }
 

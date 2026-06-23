@@ -3,6 +3,7 @@ import { auth0 } from '../../../../lib/auth0';
 import { getProject, getProjectFiles } from '../../../../lib/db/projects';
 import { getProjectSandbox } from '../../../../lib/daytona';
 import { normalizeProjectPath } from '../../../../lib/project-paths';
+import { CANVAS_FALLBACK_FILE, extractLatestCanvasHtml } from '../../../../lib/canvas-preview';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,15 @@ export async function GET(req: Request) {
     const file = allFiles.find(f => f.path === cleanPath);
 
     if (!file) {
+      if (cleanPath === CANVAS_FALLBACK_FILE) {
+        const canvasHtml = extractLatestCanvasHtml(project.messages || []);
+        if (canvasHtml) {
+          return new NextResponse(canvasHtml, {
+            headers: { 'Content-Type': 'text/plain' }
+          });
+        }
+      }
+
       // Fallback to Daytona for backward compatibility with older projects
       try {
         const sandbox = await getProjectSandbox(projectId);

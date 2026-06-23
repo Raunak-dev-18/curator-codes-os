@@ -9,7 +9,8 @@ import remarkGfm from 'remark-gfm';
 import Editor from '@monaco-editor/react';
 import { FileExplorer } from './FileExplorer';
 import { ContextMenu } from './ContextMenu';
-import { CheckCircle2, Code2, Eye, FileCode2, FolderTree, Loader2, Search, Settings, Sparkles, Terminal, X } from 'lucide-react';
+import { CheckCircle2, Code2, Eye, FileCode2, FolderTree, Loader2, Play, RefreshCw, Search, Settings, Sparkles, Terminal, X } from 'lucide-react';
+import { extractIframePreviewUrl, isRenderableCanvasCode } from '@/lib/canvas-preview';
 
 interface Project {
   id: string;
@@ -28,6 +29,7 @@ interface AgentActivity {
   detail?: string;
   status: 'working' | 'done' | 'error';
   toolName?: string;
+  path?: string;
 }
 
 function isToolPart(part: any) {
@@ -54,6 +56,19 @@ function getToolInput(tool: any) {
   }
 
   return rawInput && typeof rawInput === 'object' ? rawInput : {};
+}
+
+function getToolOutput(tool: any) {
+  const output = tool?.output ?? tool?.result;
+
+  if (typeof output === 'string') return output;
+  if (output === undefined || output === null) return '';
+
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
 }
 
 function getToolStatus(tool: any): AgentActivity['status'] {
@@ -93,6 +108,7 @@ function describeTool(tool: any, index: number): AgentActivity {
         status,
         label: status === 'done' ? 'Edited file' : 'Editing file',
         detail: input.path,
+        path: input.path,
       };
     case 'read_file':
       return {
@@ -101,6 +117,7 @@ function describeTool(tool: any, index: number): AgentActivity {
         status,
         label: status === 'done' ? 'Read file' : 'Reading file',
         detail: input.path,
+        path: input.path,
       };
     case 'list_files':
       return {
@@ -110,6 +127,14 @@ function describeTool(tool: any, index: number): AgentActivity {
         label: status === 'done' ? 'Listed files' : 'Scanning files',
         detail: input.path || '.',
       };
+    case 'sync_project_files':
+      return {
+        id,
+        toolName,
+        status,
+        label: status === 'done' ? 'Synced files' : 'Syncing files',
+        detail: input.path || '.',
+      };
     case 'delete_file':
       return {
         id,
@@ -117,6 +142,7 @@ function describeTool(tool: any, index: number): AgentActivity {
         status,
         label: status === 'done' ? 'Deleted file' : 'Deleting file',
         detail: input.path,
+        path: input.path,
       };
     case 'move_file':
       return {
@@ -125,6 +151,7 @@ function describeTool(tool: any, index: number): AgentActivity {
         status,
         label: status === 'done' ? 'Moved file' : 'Moving file',
         detail: input.source && input.destination ? `${input.source} -> ${input.destination}` : input.source,
+        path: input.destination || input.source,
       };
     case 'get_preview_url':
       return {
@@ -184,6 +211,84 @@ function collectRecentActivities(messages: any[], isLoading: boolean): AgentActi
   return activities.slice(-6);
 }
 
+function getRecentFileActivity(activities: AgentActivity[]) {
+  return [...activities].reverse().find((activity) => activity.path);
+}
+
+function getCompletedWorkspaceMutationSignature(messages: any[]) {
+  const entries: string[] = [];
+
+  for (const message of messages) {
+    const parts = message.parts?.filter(isToolPart) || [];
+    const legacyTools = (message as any)?.toolInvocations || [];
+
+    for (const tool of [...parts, ...legacyTools]) {
+      const toolName = getToolName(tool);
+      if (!['write_file', 'delete_file', 'move_file', 'execute_command', 'sync_project_files'].includes(toolName)) continue;
+      if (getToolStatus(tool) !== 'done') continue;
+
+      const input = getToolInput(tool);
+      entries.push(`${toolName}:${input.path || input.source || input.command || ''}:${input.destination || ''}:${tool?.toolCallId || tool?.id || entries.length}`);
+    }
+  }
+
+  return entries.join('|');
+}
+
+function extractPreviewUrl(text: string) {
+  const directMatch = text.match(/Preview URL:\s*(https?:\/\/[^\s<>"']+)/i);
+  if (directMatch?.[1]) return directMatch[1];
+
+  const iframeMatch = text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeMatch?.[1]) return iframeMatch[1];
+
+  const urlMatch = text.match(/https?:\/\/[^\s<>"']+/i);
+  return urlMatch?.[0] || '';
+}
+
+function getLatestPreviewState(messages: any[]) {
+  let code = '';
+  let url = '';
+
+  for (const message of messages) {
+    const parts = message.parts?.filter(isToolPart) || [];
+    const legacyTools = (message as any)?.toolInvocations || [];
+
+    for (const tool of [...parts, ...legacyTools]) {
+      const toolName = getToolName(tool);
+      const input = getToolInput(tool);
+      const output = getToolOutput(tool);
+
+      if (toolName === 'get_preview_url') {
+        const parsedUrl = extractPreviewUrl(output);
+        if (parsedUrl) {
+          url = parsedUrl;
+          code = '';
+        }
+      }
+
+      if (toolName === 'updateCanvas' && input.code) {
+        const iframeUrl = extractIframePreviewUrl(input.code);
+        if (iframeUrl) {
+          url = iframeUrl;
+          code = '';
+        } else if (isRenderableCanvasCode(input.code)) {
+          code = input.code;
+          url = '';
+        } else {
+          const parsedUrl = extractPreviewUrl(input.code);
+          if (parsedUrl) {
+            url = parsedUrl;
+            code = '';
+          }
+        }
+      }
+    }
+  }
+
+  return { code, url };
+}
+
 function ActivityIcon({ activity }: { activity: AgentActivity }) {
   if (activity.status === 'done') return <CheckCircle2 width={14} height={14} />;
   if (activity.status === 'error') return <X width={14} height={14} />;
@@ -201,11 +306,29 @@ function ActivityIcon({ activity }: { activity: AgentActivity }) {
     case 'updateCanvas':
     case 'get_preview_url':
       return <Eye width={14} height={14} />;
+    case 'sync_project_files':
+      return <RefreshCw width={14} height={14} />;
     case 'thinking':
       return <Sparkles width={14} height={14} />;
     default:
       return <Code2 width={14} height={14} />;
   }
+}
+
+function ActivityProgress({ activity }: { activity: AgentActivity }) {
+  if (activity.status !== 'working') return null;
+
+  if (activity.toolName === 'write_file') {
+    return (
+      <span className="activity-write-lines" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    );
+  }
+
+  return <span className="activity-progress-line" aria-hidden="true" />;
 }
 
 function AgentActivityPanel({ activities, isLoading }: { activities: AgentActivity[]; isLoading: boolean }) {
@@ -237,6 +360,7 @@ function AgentActivityPanel({ activities, isLoading }: { activities: AgentActivi
               <span className="agent-activity-copy">
                 <span className="agent-activity-label">{activity.label}</span>
                 {activity.detail && <span className="agent-activity-detail">{activity.detail}</span>}
+                <ActivityProgress activity={activity} />
               </span>
             </div>
           ))}
@@ -246,8 +370,43 @@ function AgentActivityPanel({ activities, isLoading }: { activities: AgentActivi
   );
 }
 
+function ToolExecutionStrip({ activities, isLoading }: { activities: AgentActivity[]; isLoading: boolean }) {
+  if (!isLoading && activities.length === 0) return null;
+
+  const visibleActivities = activities.length > 0
+    ? activities.slice(-4)
+    : [{ id: 'thinking-strip', label: 'Planning build steps', status: 'working' as const, toolName: 'thinking' }];
+
+  return (
+    <div className="tool-execution-strip">
+      {visibleActivities.map((activity) => (
+        <div key={activity.id} className={`tool-execution-pill ${activity.status}`}>
+          <ActivityIcon activity={activity} />
+          <span>{activity.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PreviewEmptyState({ isLoading }: { isLoading: boolean }) {
+  return (
+    <div className="preview-empty-state">
+      <div className="preview-empty-icon">
+        {isLoading ? <Loader2 width={22} height={22} className="spin-icon" /> : <Play width={22} height={22} />}
+      </div>
+      <div className={isLoading ? 'shimmer-text' : ''}>
+        {isLoading ? 'Waiting for sandbox preview' : 'Preview will appear here'}
+      </div>
+      <p>The agent will start the app in Daytona and attach the live preview URL.</p>
+    </div>
+  );
+}
+
 export function Workspace({ project, initialPrompt }: WorkspaceProps) {
   const [canvasCode, setCanvasCode] = useState<string>('');
+  const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const [input, setInput] = useState<string>('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const initialTriggered = useRef(false);
@@ -321,6 +480,10 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
   const isLoading = status === 'submitted' || status === 'streaming';
   const activities = collectRecentActivities(messages, isLoading);
+  const recentFileActivity = getRecentFileActivity(activities);
+  const activeCommandActivity = [...activities].reverse().find((activity) => activity.toolName === 'execute_command');
+  const activePreviewActivity = [...activities].reverse().find((activity) => activity.toolName === 'get_preview_url' || activity.toolName === 'updateCanvas');
+  const fileMutationSignatureRef = useRef('');
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -383,27 +546,27 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Extract the latest canvas code from tool invocations
+  // Extract the latest preview URL/canvas code from tool invocations.
   useEffect(() => {
-    const latestMessage = messages[messages.length - 1];
-    if (latestMessage?.parts) {
-      for (const part of latestMessage.parts) {
-        if (part.type === 'tool-updateCanvas' || (part.type === 'dynamic-tool' && (part as any).toolName === 'updateCanvas')) {
-          const args = (part as any).input || (part as any).args;
-          if (args && args.code) {
-            setCanvasCode(args.code);
-            return;
-          }
-        }
+    const nextPreview = getLatestPreviewState(messages);
+    setCanvasCode(nextPreview.code);
+    setPreviewUrl(nextPreview.url);
+  }, [messages]);
+
+  useEffect(() => {
+    const nextSignature = getCompletedWorkspaceMutationSignature(messages);
+    if (!nextSignature || nextSignature === fileMutationSignatureRef.current) return;
+
+    fileMutationSignatureRef.current = nextSignature;
+    setFileRefreshKey((key) => key + 1);
+
+    if (recentFileActivity?.path) {
+      setViewMode('code');
+      if (recentFileActivity.toolName === 'write_file') {
+        handleFileSelect(recentFileActivity.path);
       }
     }
-
-    const legacyCanvasTool = (latestMessage as any)?.toolInvocations?.find((tool: any) => tool.toolName === 'updateCanvas');
-    const legacyArgs = legacyCanvasTool?.args || legacyCanvasTool?.input;
-    if (legacyArgs?.code) {
-      setCanvasCode(legacyArgs.code);
-    }
-  }, [messages]);
+  }, [messages, recentFileActivity?.path, recentFileActivity?.toolName]);
 
   // Sidebar resizer logic
   useEffect(() => {
@@ -472,7 +635,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
     };
     
     fetchFileContent();
-  }, [activeFile, project.id]);
+  }, [activeFile, project.id, fileRefreshKey]);
 
   // Trigger initial prompt
   useEffect(() => {
@@ -519,14 +682,6 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
       });
     }
   };
-
-  const defaultCanvas = `
-    <html>
-      <body style="background: #107c41; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: system-ui, sans-serif;">
-        <h2 style="opacity: 0.5;">Preview Canvas</h2>
-      </body>
-    </html>
-  `;
 
   return (
     <div className="workspace-layout">
@@ -627,65 +782,6 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {textContent}
                         </ReactMarkdown>
-                        {((m as any).toolInvocations || m.parts?.filter(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool'))?.map((tool: any, idx: number) => {
-                          const toolName = tool.toolName || (tool.type?.startsWith('tool-') ? tool.type.split('tool-')[1] : 'Unknown');
-                          const isResult = tool.state === 'result' || tool.state === 'output-available' || ('result' in tool && tool.result !== undefined) || ('output' in tool && tool.output !== undefined) || tool.type === 'tool-result';
-                          
-                          let label = 'Working...';
-                          let icon = isResult ? (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2">
-                              <path d="M20 6L9 17l-5-5"/>
-                            </svg>
-                          ) : (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
-                               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                            </svg>
-                          );
-
-                          // Parse args to show specific info
-                          let args = {} as any;
-                          try {
-                            if (tool.input && typeof tool.input === 'object') args = tool.input;
-                            else if (typeof tool.input === 'string') args = JSON.parse(tool.input);
-                            else if (tool.args && typeof tool.args === 'object') args = tool.args;
-                            else if (typeof tool.args === 'string') args = JSON.parse(tool.args);
-                            else if (typeof tool.inputText === 'string') args = JSON.parse(tool.inputText);
-                            else if (typeof tool.argsText === 'string') args = JSON.parse(tool.argsText);
-                          } catch (e) {}
-
-                          const commandStr = args.command ? (args.command.length > 30 ? args.command.substring(0, 30) + '...' : args.command) : 'command';
-
-                          if (toolName === 'updateCanvas') {
-                            label = 'Updating Preview Canvas...';
-                          } else if (toolName === 'execute_command') {
-                            label = `Running: ${commandStr}`;
-                          } else if (toolName === 'write_file') {
-                            label = `Writing file: ${args.path || 'file'}...`;
-                            if (!isResult) {
-                              icon = (
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-pulse">
-                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                </svg>
-                              );
-                            }
-                          } else if (toolName === 'read_file') {
-                            label = `Reading: ${args.path || 'file'}...`;
-                          } else if (toolName === 'get_preview_url') {
-                            label = 'Fetching Preview URL...';
-                          } else if (toolName === 'list_files') {
-                            label = 'Listing Sandbox Files...';
-                          } else if (toolName === 'create_sandbox') {
-                            label = 'Initializing Sandbox...';
-                          }
-
-                          return (
-                            <div key={idx} className={`tool-call-badge flex items-center gap-2 px-3 py-2 rounded-md border text-xs w-fit mt-2 shadow-sm ${isResult ? 'bg-[#1e1e1e] border-[#333] text-neutral-400' : 'bg-[#1a2e1e] border-[#2e5e3e] text-[#4ade80]'}`} title={toolName}>
-                              {icon}
-                              <span className="font-mono">{label}</span>
-                            </div>
-                          );
-                        })}
                         <div className="message-actions">
                           <button 
                             className="copy-btn" 
@@ -792,22 +888,65 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
         {/* Right Canvas / Code Area */}
         <div className="workspace-canvas" style={{ alignItems: 'stretch' }}>
+          <ToolExecutionStrip activities={activities} isLoading={isLoading} />
           {viewMode === 'preview' ? (
             <div className="canvas-wrapper" style={{ flex: 1, width: '100%', height: '100%' }}>
-              <iframe 
-                srcDoc={canvasCode || defaultCanvas}
-                sandbox="allow-scripts allow-same-origin allow-forms"
-                className="canvas-frame"
-                title="Preview Canvas"
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
+              {(isLoading || activePreviewActivity) && (
+                <div className="preview-status-bar">
+                  <span className="preview-status-icon">
+                    {isLoading ? <Loader2 width={14} height={14} className="spin-icon" /> : <CheckCircle2 width={14} height={14} />}
+                  </span>
+                  <span className={isLoading ? 'shimmer-text' : ''}>
+                    {activePreviewActivity?.label || (isLoading ? 'Preparing live preview' : 'Preview ready')}
+                  </span>
+                  {previewUrl && <span className="preview-url-label">{previewUrl}</span>}
+                </div>
+              )}
+              {previewUrl ? (
+                <iframe
+                  src={previewUrl}
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                  className="canvas-frame"
+                  title="Live Preview"
+                  style={{ width: '100%', height: '100%', border: 'none' }}
+                />
+              ) : canvasCode ? (
+                <iframe
+                  srcDoc={canvasCode}
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                  className="canvas-frame"
+                  title="Preview Canvas"
+                  style={{ width: '100%', height: '100%', border: 'none' }}
+                />
+              ) : (
+                <PreviewEmptyState isLoading={isLoading} />
+              )}
             </div>
           ) : (
             <div className="code-mode-container">
               <div className="file-explorer-panel">
                 <div className="explorer-title flex items-center justify-between" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span>Explorer</span>
+                  {isLoading && <RefreshCw width="13" height="13" className="spin-icon" />}
                 </div>
+                {recentFileActivity && (
+                  <div className={`code-agent-status ${recentFileActivity.status}`}>
+                    <FileCode2 width={14} height={14} />
+                    <div>
+                      <strong>{recentFileActivity.label}</strong>
+                      <span>{recentFileActivity.path}</span>
+                    </div>
+                  </div>
+                )}
+                {activeCommandActivity && (
+                  <div className={`code-agent-status command ${activeCommandActivity.status}`}>
+                    <Terminal width={14} height={14} />
+                    <div>
+                      <strong>{activeCommandActivity.label}</strong>
+                      <span>{activeCommandActivity.detail}</span>
+                    </div>
+                  </div>
+                )}
                 <div style={{ padding: '0 1rem 0.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', background: '#000', borderRadius: '4px', border: '1px solid #333', padding: '2px 6px' }}>
                     <Search width="12" height="12" color="#737373" />
@@ -823,6 +962,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                   projectId={project.id} 
                   onFileSelect={handleFileSelect} 
                   searchQuery={searchQuery}
+                  refreshKey={fileRefreshKey}
                 />
               </div>
               <div className="editor-panel">
