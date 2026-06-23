@@ -456,6 +456,13 @@ h1, h2, h3, h4, h5, h6 {
   border-color: #ffffff;
 }
 
+.prompt-card.busy {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: linear-gradient(90deg, rgba(255,255,255,0.035), rgba(255,255,255,0.07), rgba(255,255,255,0.035));
+  background-size: 220% 100%;
+  animation: shimmer-surface 1.35s linear infinite;
+}
+
 .prompt-textarea {
   width: 100%;
   background: transparent;
@@ -471,6 +478,12 @@ h1, h2, h3, h4, h5, h6 {
 
 .prompt-textarea::placeholder {
   color: rgba(255, 255, 255, 0.5);
+}
+
+.prompt-textarea:disabled {
+  color: rgba(255, 255, 255, 0.48);
+  cursor: not-allowed;
+  resize: none;
 }
 
 .prompt-footer {
@@ -508,6 +521,11 @@ h1, h2, h3, h4, h5, h6 {
 .btn-submit:disabled {
   background: #333333;
   color: #666666;
+  cursor: not-allowed;
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 

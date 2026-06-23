@@ -205,7 +205,19 @@ function collectRecentActivities(messages: any[], isLoading: boolean): AgentActi
   const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
   const parts = lastAssistant?.parts?.filter(isToolPart) || [];
   const legacyTools = (lastAssistant as any)?.toolInvocations || [];
-  const activities = [...parts, ...legacyTools].map(describeTool);
+  const activities = [...parts, ...legacyTools].map(describeTool).map((activity) => {
+    if (isLoading || activity.status !== 'working') return activity;
+
+    return {
+      ...activity,
+      status: 'error' as const,
+      label: activity.toolName === 'execute_command'
+        ? 'Command interrupted'
+        : activity.toolName === 'write_file' || activity.toolName === 'write_files'
+          ? 'File edit interrupted'
+          : 'Action interrupted',
+    };
+  });
 
   if (isLoading && activities.length === 0) {
     return [{
@@ -416,6 +428,30 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
   const [editorContextMenu, setEditorContextMenu] = useState<{ x: number, y: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const agentBusyRef = useRef(false);
+  const agentReleaseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const setAgentLock = (nextBusy: boolean) => {
+    agentBusyRef.current = nextBusy;
+    setAgentBusy(nextBusy);
+  };
+
+  const beginAgentRun = () => {
+    if (agentReleaseTimeoutRef.current) {
+      clearTimeout(agentReleaseTimeoutRef.current);
+      agentReleaseTimeoutRef.current = null;
+    }
+    setAgentLock(true);
+  };
+
+  const releaseAgentRunSoon = () => {
+    if (agentReleaseTimeoutRef.current) clearTimeout(agentReleaseTimeoutRef.current);
+    agentReleaseTimeoutRef.current = setTimeout(() => {
+      setAgentLock(false);
+      agentReleaseTimeoutRef.current = null;
+    }, 350);
+  };
 
   const handleFileSelect = (path: string) => {
     if (!openedFiles.includes(path)) {
@@ -463,10 +499,14 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
       body: { projectId: project.id },
     }),
     messages: project.messages,
+    onFinish: releaseAgentRunSoon,
+    onError: releaseAgentRunSoon,
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
   const activities = collectRecentActivities(messages, isLoading);
+  const hasWorkingActivity = activities.some((activity) => activity.status === 'working');
+  const isAgentWorking = isLoading || agentBusy || hasWorkingActivity;
   const fileMutationSignatureRef = useRef('');
 
   const handleCopy = (text: string, id: string) => {
@@ -477,7 +517,8 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if ((!input.trim() && selectedFiles.length === 0) || isLoading) return;
+    if ((!input.trim() && selectedFiles.length === 0) || isAgentWorking || agentBusyRef.current) return;
+    beginAgentRun();
 
     let finalInput = input;
     const imageFiles: File[] = [];
@@ -515,7 +556,11 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
       payload.files = attachments;
     }
 
-    sendMessage(payload, { body: { projectId: project.id } });
+    sendMessage(payload, { body: { projectId: project.id } })
+      .catch((err) => {
+        console.error('Failed to send message', err);
+        releaseAgentRunSoon();
+      });
     setInput('');
     setSelectedFiles([]);
   };
@@ -623,10 +668,20 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
     fetchFileContent();
   }, [activeFile, project.id, fileRefreshKey]);
 
+
+
+
+  useEffect(() => {
+    return () => {
+      if (agentReleaseTimeoutRef.current) clearTimeout(agentReleaseTimeoutRef.current);
+    };
+  }, []);
+
   // Trigger initial prompt
   useEffect(() => {
     if ((initialPrompt || typeof window !== 'undefined' && sessionStorage.getItem(`initial_files_${project.id}`)) && project.messages.length === 0 && !initialTriggered.current) {
       initialTriggered.current = true;
+      beginAgentRun();
       
       const payload: any = { text: initialPrompt || '' };
       
@@ -640,7 +695,11 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
         console.error("Failed to parse initial files", e);
       }
       
-      sendMessage(payload, { body: { projectId: project.id } });
+      sendMessage(payload, { body: { projectId: project.id } })
+        .catch((err) => {
+          console.error('Failed to send initial prompt', err);
+          releaseAgentRunSoon();
+        });
       window.history.replaceState({}, '', `/projects/${project.id}`);
     }
   }, [initialPrompt, project.messages.length, project.id, sendMessage]);
@@ -808,7 +867,7 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
               </button>
             )}
             <div className="chat-input-container">
-              <form onSubmit={handleSubmit} className="prompt-card small">
+              <form onSubmit={handleSubmit} className={`prompt-card small ${isAgentWorking ? 'busy' : ''}`}>
                 {selectedFiles.length > 0 && (
                   <div className="selected-files">
                     {selectedFiles.map((f, idx) => (
@@ -833,13 +892,14 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
               <textarea 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Build me a blog page."
+                placeholder={isAgentWorking ? 'Agent is working...' : 'Build me a blog page.'}
                 className="prompt-textarea"
                 rows={1}
+                disabled={isAgentWorking}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (input.trim() || selectedFiles.length > 0) handleSubmit(e);
+                    if (!isAgentWorking && (input.trim() || selectedFiles.length > 0)) handleSubmit(e);
                   }
                 }}
               />
@@ -852,11 +912,11 @@ export function Workspace({ project, initialPrompt }: WorkspaceProps) {
                     style={{ display: 'none' }} 
                     onChange={handleFileChange} 
                   />
-                  <button type="button" className="icon-btn" title="Attach file" onClick={() => fileInputRef.current?.click()}>
+                  <button type="button" className="icon-btn" title="Attach file" disabled={isAgentWorking} onClick={() => fileInputRef.current?.click()}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
                   </button>
                 </div>
-                <button type="submit" className="btn-submit" title="Send" disabled={(!input.trim() && selectedFiles.length === 0) || isLoading}>
+                <button type="submit" className="btn-submit" title={isAgentWorking ? 'Agent is working' : 'Send'} disabled={(!input.trim() && selectedFiles.length === 0) || isAgentWorking}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
                 </button>
               </div>

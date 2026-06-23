@@ -12,6 +12,9 @@ import { isRenderableCanvasCode } from '../../../lib/canvas-preview';
 // Allow long-running operations
 export const maxDuration = 60;
 
+const COMMAND_TIMEOUT_MS = 45_000;
+const COMMAND_OUTPUT_LIMIT = 12_000;
+
 function getRequiredRootNextCommand() {
   return 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes --force';
 }
@@ -22,6 +25,18 @@ function getCreateNextAppTarget(command: string) {
 }
 
 function validateSandboxCommand(command: string) {
+  if (/[;&]{2}|\|\||;/.test(command)) {
+    return 'Refused chained shell command. Run one focused command per tool call so progress and failures are visible.';
+  }
+
+  if (/\brm\s+-[^\n]*[rf]/.test(command)) {
+    return 'Refused destructive cleanup command. Use delete_file for intentional file removal.';
+  }
+
+  if (/\bnpm\s+run\s+dev\b/.test(command) && !/^nohup\s+npm\s+run\s+dev\s+--\s+--hostname\s+0\.0\.0\.0\s*>\s*dev\.log\s+2>&1\s*&\s*$/.test(command)) {
+    return "Refused foreground dev server command. Start preview with: nohup npm run dev -- --hostname 0.0.0.0 > dev.log 2>&1 &";
+  }
+
   const createNextTarget = getCreateNextAppTarget(command);
   if (!createNextTarget) return null;
 
@@ -35,6 +50,61 @@ function validateSandboxCommand(command: string) {
 
   return null;
 }
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(label)), timeoutMs);
+    }),
+  ]);
+}
+
+function truncateOutput(output: unknown) {
+  const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  if (text.length <= COMMAND_OUTPUT_LIMIT) return text;
+  return `${text.slice(0, COMMAND_OUTPUT_LIMIT)}\n\n[output truncated after ${COMMAND_OUTPUT_LIMIT} characters]`;
+}
+
+const APP_BUILDER_SYSTEM_PROMPT = `You are an autonomous AI app builder for a v0/Lovable/Replit-style product.
+Your job is to turn the user's prompt into a real full-stack Next.js App Router project inside the existing Daytona sandbox and keep the database-backed file explorer accurate.
+
+Operating principles:
+- Work autonomously. Do not ask permission for ordinary build steps.
+- The app must be a real Next.js project, not a static HTML page, CDN demo, iframe dump, or updateCanvas prototype.
+- The database-backed file explorer is the user-visible source of truth. Every authored source file must be created with write_file or write_files.
+- Never create nested apps like blog-app. Build in the sandbox root ".".
+- Prefer write_files for authored code. Use shell commands only for scaffolding, dependency install, build checks, and starting the preview server.
+- Never run chained shell commands, destructive cleanup commands, or foreground dev servers.
+- If a command fails or times out, do not loop on commands. Continue by writing the needed source files directly, then run one bounded verification command.
+
+Required workflow for a fresh app:
+1. Inspect or scaffold:
+   - If package.json is missing, run exactly: ${getRequiredRootNextCommand()}
+   - If package.json exists, do not re-run create-next-app.
+   - After command-generated files, call sync_project_files with path ".".
+2. Author the app:
+   - Use write_files to create or overwrite at least src/app/page.tsx, src/app/layout.tsx, src/app/globals.css, and supporting files under src/components or src/lib as needed.
+   - For full-stack requirements, add Route Handlers under src/app/api/**/route.ts and shared server modules under src/lib/**.
+   - Use complete file contents. Do not emit partial patches or code blocks in chat.
+3. Verify:
+   - Run one focused check such as npm run build.
+   - If it fails, read the relevant file or error, fix with write_file/write_files, then run one more focused check.
+4. Preview:
+   - Start the server only with: nohup npm run dev -- --hostname 0.0.0.0 > dev.log 2>&1 &
+   - Then call get_preview_url for port 3000.
+
+Design expectations:
+- Build polished, responsive, production-quality interfaces.
+- Use App Router patterns, React components, route handlers, server/client boundaries, and Tailwind CSS.
+- Use lucide-react icons when icons are useful.
+- Avoid one-off landing-page filler when the user asked for an app; build the actual usable product surface.
+
+Chat behavior:
+- Keep chat text short and operational.
+- Do not paste raw source code, minified bundles, HTML documents, or iframes into chat.
+- Do not use updateCanvas to build or preview apps. The preview must come from get_preview_url.
+- Finish by briefly stating what was built and that the preview is ready or what exact blocker remains.`;
 
 export async function POST(req: Request) {
   const session = await auth0.getSession();
@@ -100,54 +170,12 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
-    stopWhen: stepCountIs(20),
-    system: `You are an elite, autonomous AI App Builder (like Lovable.dev or Replit Agent).
-Your singular job is to build fully-functional, beautiful, and production-ready Next.js web applications directly from user prompts.
-You have access to a secure, remote Daytona Node.js sandbox.
-
-## 🎯 Core Directives
-1. **Act Autonomously**: Do not ask for permission. When a user gives a prompt, use your tools to build it end-to-end.
-2. **Write Actual Code**: Do NOT just run 'create-next-app' and stop. You MUST write the actual application logic, components, and pages using the 'write_file' tool. A generated boilerplate is not an app.
-3. **Build Full Next.js Apps**: Do not build one-off HTML pages, CDN prototypes, or updateCanvas-only demos. Build a real App Router project with src/app files, components, package.json, and server/client logic when needed.
-4. **Premium Aesthetics**: Your UI/UX must be breathtaking. Use Tailwind CSS, glassmorphism, subtle gradients, rich shadows, and framer-motion micro-animations.
-5. **Use the existing sandbox**: Never create nested apps such as "blog-app" inside the sandbox. Work in "." unless the user explicitly asks for a subfolder.
-
-## 🚀 The Multi-Step Agentic Workflow
-You MUST follow this exact loop for every project:
-
-**Step 1: Code Acquisition & Scaffolding**
-- If working with an existing repo, use 'git_clone' to clone it.
-- If starting fresh, use 'execute_command': 'npx -y create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --yes --force'
-- Wait for it to finish, then 'execute_command': 'npm install framer-motion lucide-react clsx tailwind-merge'
-- After any scaffolding, install, or generated-file command, call 'sync_project_files' so the user's file explorer updates.
-
-**Step 2: Architecture & Coding (CRITICAL STEP)**
-- You must physically write the code for the user's request. 
-- Use 'write_file' or 'write_files' to create or overwrite 'src/app/page.tsx', 'src/app/layout.tsx', 'src/app/globals.css', and any necessary UI components.
-- Prefer 'write_files' when creating multiple files so the database-backed explorer updates in one atomic step.
-- For full-stack features, create Route Handlers under 'src/app/api/**/route.ts' and shared modules under 'src/lib/**' using 'write_file' or 'write_files'.
-- You can use 'delete_file' or 'move_file' to manage the file system.
-- **IMPORTANT**: The user's IDE reads synced project files. Use 'write_file'/'write_files' for authored files and 'sync_project_files' after command-generated files. Do not skip this step.
-
-**Step 3: Version Control (Optional)**
-- If the user asks you to save or commit work, use 'git_commit' and 'git_push'.
-
-**Step 4: Start Server & Get URL**
-- Use 'execute_command' to start the Next.js dev server: 'nohup npm run dev -- --hostname 0.0.0.0 > dev.log 2>&1 &'
-- If you encounter issues, you can check 'get_entrypoint_logs' or read 'dev.log'.
-- Use 'get_preview_url' with port '3000' to fetch the live URL.
-
-**Step 5: Render to User**
-- The UI automatically renders URLs returned by 'get_preview_url'. Do not pass HTML, compiled JavaScript bundles, or raw app code to 'updateCanvas'.
-
-## 🚫 Strict Rules
-1. **NO RAW CODE IN CHAT**: NEVER output raw markdown code blocks (e.g. tsx code blocks) in your chat messages. Only use 'write_file'.
-2. **CONCISE CHAT**: Keep chat text to one short sentence while building. The UI shows thinking, commands, file edits, and preview progress.
-3. **NO IFRAME IN CHAT**: Never output HTML iframes in the chat text.
-4. **NO BUNDLES AS PREVIEW**: Never send minified/bundled JavaScript to 'updateCanvas'. Use 'get_preview_url' for live preview.
-5. **NO STATIC HTML APPS**: If you want to display UI, write the equivalent Next.js source files with 'write_file'.
-
-Remember: Scaffolding is just step 1. You haven't built the app until you've written the custom React components via 'write_file'! Make the user say "WOW".`,
+    stopWhen: stepCountIs(14),
+    timeout: {
+      totalMs: 55_000,
+      stepMs: 45_000,
+    },
+    system: APP_BUILDER_SYSTEM_PROMPT,
     messages: modelMessages,
     tools: {
       updateCanvas: tool({
@@ -175,7 +203,11 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
 
           try {
             const sandbox = await getProjectSandbox(projectId);
-            const response = await sandbox.process.executeCommand(command);
+            const response = await withTimeout(
+              sandbox.process.executeCommand(command),
+              COMMAND_TIMEOUT_MS,
+              `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s. Stop retrying this command; write files directly or run a smaller verification command.`
+            );
             let syncSummary = '';
 
             try {
@@ -188,7 +220,7 @@ Remember: Scaffolding is just step 1. You haven't built the app until you've wri
               syncSummary = `\n\nProject file sync failed: ${message}`;
             }
 
-            return `Exit Code: ${response.exitCode}\nOutput:\n${response.result}${syncSummary}`;
+            return `Exit Code: ${response.exitCode}\nOutput:\n${truncateOutput(response.result)}${syncSummary}`;
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown command error';
             return `Failed to run command: ${message}`;
