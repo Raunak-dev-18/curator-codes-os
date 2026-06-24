@@ -23,11 +23,11 @@ export async function DELETE(req: Request) {
     }
 
     const cleanPath = normalizeProjectPath(path);
-    const sandbox = await getProjectSandbox(projectId);
     try {
+      const sandbox = await getProjectSandbox(projectId);
       await sandbox.fs.deleteFile(cleanPath, true);
     } catch (daytonaErr) {
-      console.warn('Daytona delete failed (maybe file only exists in DB):', daytonaErr);
+      console.warn('Daytona delete failed (maybe file only exists in DB or sandbox is down):', daytonaErr);
     }
     
     await deleteProjectFile(projectId, session.user.sub, cleanPath);
@@ -59,11 +59,11 @@ export async function PUT(req: Request) {
 
     const cleanPath = normalizeProjectPath(path);
     const cleanNewPath = normalizeProjectPath(newPath);
-    const sandbox = await getProjectSandbox(projectId);
     try {
+      const sandbox = await getProjectSandbox(projectId);
       await sandbox.fs.moveFiles(cleanPath, cleanNewPath);
     } catch (daytonaErr) {
-      console.warn('Daytona rename failed (maybe file only exists in DB):', daytonaErr);
+      console.warn('Daytona rename failed (maybe file only exists in DB or sandbox is down):', daytonaErr);
     }
 
     await renameProjectFile(projectId, session.user.sub, cleanPath, cleanNewPath);
