@@ -170,35 +170,42 @@ You must operate systematically. Do not guess; verify.
 1. **Phase 1: Explore and Setup**
    - Execute \\\`get_project_state\\\` immediately to understand what exists.
    - If \\\`package.json\\\` is missing, scaffold Next.js by executing exactly: \\\`\${getRequiredRootNextCommand()}\\\` using \\\`execute_command\\\`.
-   - Never build nested directories. Scaffolding must happen in the root folder \\\`.\\\`.
-   - After running scaffolding commands, call \\\`sync_project_files\\\` with path \\\`.\\\` to populate the user's database so they can see the files.
+   - Execute \`get_project_state\` immediately to understand what exists.
+   - If \`package.json\` is missing, scaffold Next.js by executing exactly: \`${getRequiredRootNextCommand()}\` using \`execute_command\`.
+   - Never build nested directories. Scaffolding must happen in the root folder \`.\`.
+   - After running scaffolding commands, call \`sync_project_files\` with path \`.\` to populate the user's database so they can see the files.
 
 2. **Phase 2: Code Architecture & Implementation**
-   - Write complete, functional, clean code using \\\`write_files\\\`.
+   - Write complete, functional, clean code using \`write_files\`.
    - Do NOT emit stub code, placeholders, or "TODOs". Implement the actual feature logic completely.
-   - Create Route Handlers (\\\`src/app/api/**/route.ts\\\`) for backend logic.
+   - Create Route Handlers (\`src/app/api/**/route.ts\`) for backend logic.
 
 3. **Phase 3: Iterative Debugging & Verification**
-   - Run \\\`npm run build\\\` or \\\`npm run lint\\\` using \\\`execute_command\\\` to verify your code has zero compilation or TypeScript errors.
-   - IF A COMMAND FAILS: Do not give up or ask the user for help. Read the error output, use \\\`read_file\\\` to inspect the faulty code, use \\\`write_file\\\` to fix the bug, and try the command again.
-   - If a background server crashes, use \\\`get_entrypoint_logs\\\` to inspect the output streams and self-repair.
+   - Run \`npm run build\` or \`npm run lint\` using \`execute_command\` to verify your code has zero compilation or TypeScript errors.
+   - IF A COMMAND FAILS: Do not give up or ask the user for help. Read the error output, use \`read_file\` to inspect the faulty code, use \`write_file\` to fix the bug, and try the command again.
+   - If a background server crashes, use \`get_entrypoint_logs\` to inspect the output streams and self-repair.
 
 4. **Phase 4: Preview & Delivery**
-   - Once the build succeeds and you are confident, call \\\`start_preview\\\` on port 3000 to launch the application.
+   - Once the build succeeds and you are confident, call \`start_preview\` on port 3000 to launch the application.
    - Provide the preview URL to the user so they can interact with the app.
+
+---
+
+### ⚡ V0.DEV RAPID PROTOTYPING
+- If the user wants a quick UI, a v0-like clone, or rapid prototyping, use \`updateCanvas\` to stream standalone React/Tailwind code or HTML directly to their browser for an instant visual preview.
+- **IMPORTANT**: \`updateCanvas\` is purely for the frontend preview. After showing the instant preview, you MUST also use \`write_file\` or \`write_files\` to save the actual code into the project's codebase (e.g. \`src/app/page.tsx\`) so it is permanently stored in the Next.js app.
 
 ---
 
 ### 🎨 PREMIUM DESIGN STANDARD
 - The apps you build must look stunning and modern.
 - Use curated, high-end color palettes (sleek dark modes, glassmorphism, smooth gradients).
-- Utilize modern UI libraries (\\\`lucide-react\\\` for icons).
+- Utilize modern UI libraries (\`lucide-react\` for icons).
 - Build complete functional paths (settings pages, dynamic dashboards) instead of generic static landing pages.
 
 ### 💬 CHAT DESIGN PRINCIPLE
 - Keep text concise. Focus on DOING rather than EXPLAINING.
-- NEVER print source code blocks in the chat. All file modifications MUST happen silently using your file system tools.
-- Never use \\\`updateCanvas\\\` for coding; preview must always run through the Next.js dev server (\\\`start_preview\\\`).\`;
+- NEVER print source code blocks in the chat. All file modifications MUST happen silently using your file system tools.`;
 
 export async function POST(req: Request) {
   const session = await auth0.getSession();
@@ -264,6 +271,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
+    maxSteps: 15,
     stopWhen: stepCountIs(14),
     timeout: {
       totalMs: 300_000,
@@ -339,16 +347,12 @@ export async function POST(req: Request) {
         }
       }),
       updateCanvas: tool({
-        description: 'Legacy preview-status tool. Only use this for a preview URL iframe after get_preview_url. Do not use it to build apps or send HTML/source code.',
+        description: 'Instantly render a React/Tailwind component or raw HTML directly to the user preview canvas (v0.dev style). Use this for rapid prototyping BEFORE running a full build.',
         inputSchema: z.object({
-          code: z.string().describe('A preview URL iframe only. Do not pass complete HTML, React, JavaScript bundles, or source code.'),
+          code: z.string().describe('The complete HTML or React component source code (Tailwind supported) to render in the browser.'),
           explanation: z.string().describe('A brief explanation of what was built or changed.')
         }),
         execute: async ({ code, explanation }) => {
-          if (isRenderableCanvasCode(code)) {
-            return `Rejected static HTML preview. Build a full Next.js app by writing src/app/page.tsx, src/app/layout.tsx, src/app/globals.css, and any supporting components with write_file, then run npm run dev and get_preview_url.`;
-          }
-
           return `Preview updated: ${explanation}`;
         }
       }),
