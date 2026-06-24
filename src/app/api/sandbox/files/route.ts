@@ -3,7 +3,6 @@ import { auth0 } from '../../../../lib/auth0';
 import { getProject, getProjectFiles } from '../../../../lib/db/projects';
 import { getProjectSandbox } from '../../../../lib/daytona';
 import { normalizeDirectoryPath } from '../../../../lib/project-paths';
-import { CANVAS_FALLBACK_FILE, extractLatestCanvasHtml } from '../../../../lib/canvas-preview';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +36,7 @@ export async function GET(req: Request) {
     const prefix = normalizedPath ? `${normalizedPath}/` : '';
 
     for (const file of allFiles) {
+      if (file.path === 'preview.html') continue;
       if (prefix && !file.path.startsWith(prefix)) continue;
       
       const relativePath = prefix ? file.path.slice(prefix.length) : file.path;
@@ -86,17 +86,6 @@ export async function GET(req: Request) {
       }
     } catch {
       // Daytona may be unavailable or unauthorized; DB files remain usable.
-    }
-
-    if (pathParam === '.' && filesInDir.size === 0) {
-      const canvasHtml = extractLatestCanvasHtml(project.messages || []);
-      if (canvasHtml) {
-        filesInDir.set(CANVAS_FALLBACK_FILE, {
-          name: CANVAS_FALLBACK_FILE,
-          isDir: false,
-          size: canvasHtml.length,
-        });
-      }
     }
 
     return NextResponse.json({ files: Array.from(filesInDir.values()) });
