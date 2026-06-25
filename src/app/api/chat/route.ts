@@ -271,7 +271,6 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
-    maxSteps: 15,
     stopWhen: stepCountIs(14),
     timeout: {
       totalMs: 300_000,
